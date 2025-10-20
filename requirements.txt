@@ -1,7 +1,15 @@
+# Core UI
 streamlit==1.39.0
+
+# Image Processing
 Pillow==10.4.0
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
+
+# Background Removal
 rembg==2.0.59
 onnxruntime==1.19.2
+
+# Misc. dependencies (avoid protobuf errors & model compatibility)
 protobuf==5.27.3
+tqdm==4.66.4
