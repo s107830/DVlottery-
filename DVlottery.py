@@ -44,8 +44,8 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         right_eye_y = int(landmarks.landmark[263].y * img_h)
         eye_y = (left_eye_y + right_eye_y) // 2
         
-        # Add buffer for hair/head top - increased buffer to ensure full head is included
-        hair_buffer = int((chin_y - top_y) * 0.4)  # Increased from 0.25 to 0.4
+        # Add buffer for hair/head top
+        hair_buffer = int((chin_y - top_y) * 0.4)
         top_y = max(0, top_y - hair_buffer)
         
         return top_y, chin_y, eye_y
@@ -137,10 +137,10 @@ def process_dv_photo_adjusted(img_pil):
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
         head_height = chin_y - top_y
 
-        # Calculate scale factor to make head height 60% of canvas (optimal)
+        # Calculate scale factor to make head height optimal (around 60% of canvas)
         target_head_height = MIN_SIZE * 0.6
         scale_factor = target_head_height / head_height
-        scale_factor = np.clip(scale_factor, 0.3, 3.0)  # Wider range to handle various head sizes
+        scale_factor = np.clip(scale_factor, 0.3, 3.0)
         
         # Apply scaling
         new_w = int(w * scale_factor)
@@ -156,23 +156,21 @@ def process_dv_photo_adjusted(img_pil):
         head_height = chin_y - top_y
 
         # Calculate optimal eye position (middle of required range)
-        target_eye_min = MIN_SIZE - int(MIN_SIZE * EYE_MAX_RATIO)  # 56% from top
-        target_eye_max = MIN_SIZE - int(MIN_SIZE * EYE_MIN_RATIO)  # 69% from top
-        target_eye_y = (target_eye_min + target_eye_max) // 2
-
+        target_eye_y = int(MIN_SIZE * ((1 - EYE_MIN_RATIO) + (1 - EYE_MAX_RATIO)) / 2)
+        
         # Calculate y_offset to position eyes at target
         y_offset = target_eye_y - eye_y
         
-        # Ensure the entire head is visible - CRITICAL FIX
+        # CRITICAL FIX: Ensure the entire head is visible
         # Check if top of head would be cut off
         if top_y + y_offset < 0:
-            # Adjust to show full head by moving image down
-            y_offset = -top_y + 10  # Add small margin
+            # If head top would be cut off, adjust to show full head
+            y_offset = -top_y + 5  # Small margin from top
         
         # Check if bottom would be cut off
-        if chin_y + y_offset > MIN_SIZE:
-            # Adjust to show full chin by moving image up
-            y_offset = MIN_SIZE - chin_y - 10  # Add small margin
+        if chin_y + y_offset > MIN_SIZE - 5:
+            # If chin would be cut off, adjust to show full chin
+            y_offset = MIN_SIZE - chin_y - 5  # Small margin from bottom
 
         # Center horizontally
         x_offset = (MIN_SIZE - new_w) // 2
@@ -188,23 +186,19 @@ def process_dv_photo_adjusted(img_pil):
         x_start_src = max(0, -x_offset)
         x_end_src = min(new_w, MIN_SIZE - x_offset)
 
-        # Ensure valid regions
+        # Place the image on canvas
         if (y_start_dst < y_end_dst and x_start_dst < x_end_dst and 
             y_start_src < y_end_src and x_start_src < x_end_src):
             
             canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
                 resized[y_start_src:y_end_src, x_start_src:x_end_src]
         else:
-            st.error("Image placement calculation error - falling back to centered placement")
             # Fallback: center the image
-            y_offset = (MIN_SIZE - new_h) // 2
-            x_offset = (MIN_SIZE - new_w) // 2
-            if y_offset >= 0 and x_offset >= 0 and y_offset + new_h <= MIN_SIZE and x_offset + new_w <= MIN_SIZE:
+            st.warning("Using fallback placement")
+            y_offset = max(0, (MIN_SIZE - new_h) // 2)
+            x_offset = max(0, (MIN_SIZE - new_w) // 2)
+            if y_offset + new_h <= MIN_SIZE and x_offset + new_w <= MIN_SIZE:
                 canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
-            else:
-                # Final fallback: resize to fit
-                resized_fallback = cv2.resize(cv_img, (MIN_SIZE, MIN_SIZE), interpolation=cv2.INTER_LANCZOS4)
-                canvas = resized_fallback
 
         # Get final positions on the canvas
         final_top_y = top_y + y_offset
@@ -495,7 +489,7 @@ if uploaded_file:
             processed_with_lines.save(buf_with_guides, format="JPEG", quality=95)
             st.download_button(
                 label="⬇️ Download with Guidelines",
-                data=buf_with_guides.getvalue(),
+                data=b_with_guides.getvalue(),
                 file_name="dv_lottery_photo_with_guides.jpg",
                 mime="image/jpeg",
                 use_container_width=True,
