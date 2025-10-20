@@ -1,92 +1,104 @@
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import cv2
 from rembg import remove
 import io
 
-# -------------------------------
-# 🎯 App Header
-# -------------------------------
+# ------------------------------
+# Streamlit UI setup
+# ------------------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", page_icon="📸", layout="centered")
-st.title("📸 DV Lottery Photo Editor — Auto Background, Crop & Guidelines")
-st.write("Upload your photo (JPG, JPEG, PNG)")
+st.title("📸 DV Lottery Photo Editor — Auto Background, Crop & Official Guidelines")
+st.write("Upload a clear front-facing photo (JPG, JPEG, or PNG)")
 
-# -------------------------------
-# 📁 File Upload
-# -------------------------------
-uploaded_file = st.file_uploader(
-    "Upload your photo file",
-    type=["jpg", "jpeg", "png"],
-    help="Drag and drop or browse your image file. Max 200MB."
-)
+# ------------------------------
+# Constants
+# ------------------------------
+FINAL_SIZE = 600  # 600x600 pixels (2x2 inches)
+BG_COLOR = (255, 255, 255)
+HEAD_MIN = 300  # Top of head to chin
+HEAD_MAX = 414
+EYE_MIN = 336
+EYE_MAX = 414
 
-# -------------------------------
-# ⚙️ Helper Functions
-# -------------------------------
-def remove_background_smooth(img: Image.Image) -> Image.Image:
-    """Remove background with rembg and return clean white background."""
-    img = img.convert("RGBA")
+# ------------------------------
+# Background Removal
+# ------------------------------
+def remove_background(img_pil: Image.Image) -> Image.Image:
+    img_pil = img_pil.convert("RGBA")
     input_bytes = io.BytesIO()
-    img.save(input_bytes, format="PNG")
+    img_pil.save(input_bytes, format="PNG")
     input_bytes = input_bytes.getvalue()
 
-    # Run background removal
-    output_bytes = remove(input_bytes)
-    result_img = Image.open(io.BytesIO(output_bytes)).convert("RGBA")
+    result = remove(input_bytes)
+    result_img = Image.open(io.BytesIO(result)).convert("RGBA")
 
-    # Replace transparent areas with white
+    # Composite on white background
     white_bg = Image.new("RGBA", result_img.size, (255, 255, 255, 255))
-    white_bg.paste(result_img, mask=result_img.getchannel("A"))
+    white_bg.paste(result_img, mask=result_img.split()[3])
     return white_bg.convert("RGB")
 
-def crop_and_resize(img: Image.Image):
-    """Crop around face and resize to 600x600 for DV Lottery."""
-    np_img = np.array(img)
+# ------------------------------
+# Face Detection + Crop/Resize
+# ------------------------------
+def detect_and_crop(img_pil: Image.Image):
+    np_img = np.array(img_pil)
     gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
 
+    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
     if len(faces) == 0:
         raise Exception("No face detected! Please upload a clear, front-facing photo.")
 
-    (x, y, w, h) = max(faces, key=lambda f: f[2] * f[3])
-
-    # Center crop
+    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
     cx, cy = x + w // 2, y + h // 2
-    box_size = int(max(w, h) * 2.2)
-    left = max(0, cx - box_size // 2)
-    top = max(0, cy - box_size // 2)
-    right = min(np_img.shape[1], cx + box_size // 2)
-    bottom = min(np_img.shape[0], cy + box_size // 2)
+    crop_size = int(max(w, h) * 2.1)
 
-    cropped = img.crop((left, top, right, bottom))
-    cropped = cropped.resize((600, 600), Image.LANCZOS)
-    return cropped, (x, y, w, h)
+    left = max(0, cx - crop_size // 2)
+    top = max(0, cy - crop_size // 2)
+    right = min(np_img.shape[1], cx + crop_size // 2)
+    bottom = min(np_img.shape[0], cy + crop_size // 2)
 
-def draw_guidelines(img: Image.Image, face_box=None):
-    """Draw DV photo guidelines."""
+    cropped = img_pil.crop((left, top, right, bottom))
+    resized = cropped.resize((FINAL_SIZE, FINAL_SIZE), Image.LANCZOS)
+    return resized, (x, y, w, h)
+
+# ------------------------------
+# Draw Official DV Guidelines
+# ------------------------------
+def draw_dv_guidelines(img: Image.Image):
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
-    # Head height range (300–414 px)
-    draw.line([(0, h - 414), (w, h - 414)], fill="red", width=2)
-    draw.line([(0, h - 300), (w, h - 300)], fill="red", width=2)
+    # Center vertical line
+    draw.line([(w // 2, 0), (w // 2, h)], fill="gray", width=2)
 
-    # Eye-line range (336–414 px)
-    draw.line([(0, h - 414), (w, h - 414)], fill="blue", width=1)
-    draw.line([(0, h - 336), (w, h - 336)], fill="blue", width=1)
+    # Head height zone (300–414 px)
+    draw.line([(0, HEAD_MIN), (w, HEAD_MIN)], fill="red", width=2)
+    draw.line([(0, HEAD_MAX), (w, HEAD_MAX)], fill="red", width=2)
+    draw.text((10, HEAD_MIN - 20), "Head height: 300–414 px", fill="red")
 
-    # Optional: Face box
-    if face_box:
-        (x, y, w_box, h_box) = face_box
-        draw.rectangle([x, y, x + w_box, y + h_box], outline="green", width=2)
+    # Eye position zone (336–414 px from bottom)
+    eye_min_y = h - EYE_MIN
+    eye_max_y = h - EYE_MAX
+    draw.line([(0, eye_min_y), (w, eye_min_y)], fill="blue", width=2)
+    draw.line([(0, eye_max_y), (w, eye_max_y)], fill="blue", width=2)
+    draw.text((10, eye_min_y - 20), "Eye line: 336–414 px from bottom", fill="blue")
+
+    # Outer border
+    draw.rectangle([(0, 0), (w - 1, h - 1)], outline="gray", width=3)
+
+    # Labels
+    draw.text((10, 10), "2x2 inch (600x600 px)", fill="black")
 
     return img
 
-# -------------------------------
-# 🚀 Processing Section
-# -------------------------------
+# ------------------------------
+# Streamlit Main UI
+# ------------------------------
+uploaded_file = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
+
 if uploaded_file:
     try:
         image_data = uploaded_file.read()
@@ -98,30 +110,23 @@ if uploaded_file:
 
         with col1:
             st.subheader("📤 Original Photo")
-            st.image(orig)
+            st.image(orig, caption="Uploaded Image")
 
         with col2:
-            st.subheader("✅ Final DV-Compliant Photo")
+            st.subheader("✅ Processed DV-Compliant Photo")
 
-            # Step 1: Background removal
-            cleaned = remove_background_smooth(orig)
+            bg_removed = remove_background(orig)
+            cropped, _ = detect_and_crop(bg_removed)
+            final_preview = draw_dv_guidelines(cropped.copy())
 
-            # Step 2: Crop & resize
-            cropped, face_box = crop_and_resize(cleaned)
+            st.image(final_preview, caption="DV 2x2 inch with Guidelines")
 
-            # Step 3: Draw guidelines
-            final_preview = draw_guidelines(cropped.copy(), face_box)
-
-            # Display result
-            st.image(final_preview, caption="DV 2x2 inch (600x600 px)")
-
-            # Step 4: Download option
+            # Download button
             buf = io.BytesIO()
             cropped.save(buf, format="JPEG", quality=95)
             buf.seek(0)
-
             st.download_button(
-                "⬇️ Download DV-Ready Photo (600x600)",
+                label="⬇️ Download DV-Ready Photo (600x600)",
                 data=buf,
                 file_name="dvlottery_photo.jpg",
                 mime="image/jpeg"
@@ -130,4 +135,4 @@ if uploaded_file:
     except Exception as e:
         st.error(f"❌ Could not process image: {e}")
 else:
-    st.info("👆 Upload your photo to start.")
+    st.info("👆 Please upload a clear, front-facing photo.")
