@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 import cv2
 import io
@@ -18,6 +18,10 @@ HEAD_MAX_RATIO = 0.69
 EYE_MIN_RATIO = 0.56
 EYE_MAX_RATIO = 0.69
 BG_COLOR = (255, 255, 255)
+MAX_DIM = 2000  # max image dimension for performance
+
+# ---------------------- FONTS ----------------------
+font = ImageFont.load_default()
 
 # ---------------------- AI FACE DETECTION ----------------------
 mp_face_mesh = mp.solutions.face_mesh
@@ -33,9 +37,8 @@ def get_face_landmarks(cv_img):
 
 def get_head_eye_positions(landmarks, img_h, img_w):
     """Compute top of head, chin, and eye line using landmarks."""
-    # Landmark indices for approximate top of head, eyes, and chin
-    top_idx = 10    # forehead/top
-    chin_idx = 152  # chin
+    top_idx = 10
+    chin_idx = 152
     left_eye_idx = 159
     right_eye_idx = 386
 
@@ -48,7 +51,6 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     return top_y, chin_y, eye_y
 
 # ---------------------- FUNCTIONS ----------------------
-
 def remove_background(img_pil):
     """Remove background using rembg and replace with white."""
     img_byte = io.BytesIO()
@@ -90,7 +92,6 @@ def auto_adjust_dv_photo(image_pil):
     top_y_scaled = int(top_y * scale_factor)
     chin_y_scaled = int(chin_y * scale_factor)
     eye_y_scaled = int(eye_y * scale_factor)
-    head_height_scaled = chin_y_scaled - top_y_scaled
 
     # Canvas size
     canvas_size = max(new_w, new_h)
@@ -133,41 +134,50 @@ def draw_guidelines(img):
     draw.rectangle([(0, 0), (w-1, h-1)], outline="gray", width=2)
     draw.line([(0, h - head_max), (w, h - head_max)], fill="blue", width=2)
     draw.line([(0, h - head_min), (w, h - head_min)], fill="blue", width=2)
-    draw.text((10, h - head_max + 5), "Head height", fill="blue")
+    draw.text((10, h - head_max + 5), "Head height", fill="blue", font=font)
     draw.line([(0, h - eye_max), (w, h - eye_max)], fill="green", width=2)
     draw.line([(0, h - eye_min), (w, h - eye_min)], fill="green", width=2)
-    draw.text((10, h - eye_max + 5), "Eye line", fill="green")
+    draw.text((10, h - eye_max + 5), "Eye line", fill="green", font=font)
     return img
 
 # ---------------------- STREAMLIT UI ----------------------
-
 uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG)", type=["jpg", "jpeg"])
 if uploaded_file:
     try:
         img_bytes = uploaded_file.read()
         orig = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
-        col1, col2 = st.columns(2)
+        # Resize if too large
+        if max(orig.size) > MAX_DIM:
+            orig.thumbnail((MAX_DIM, MAX_DIM))
+
+        # Background removal and processing
+        bg_removed = remove_background(orig)
+        processed = auto_adjust_dv_photo(bg_removed)
+        final_preview = draw_guidelines(processed.copy())
+
+        # Display side by side
+        col1, col2, col3 = st.columns(3)
         with col1:
             st.subheader("📤 Original Photo")
-            st.image(orig, caption="Original")
-
+            st.image(orig, use_column_width=True)
         with col2:
-            st.subheader("✅ AI Processed DV Compliant")
-            bg_removed = remove_background(orig)
-            processed = auto_adjust_dv_photo(bg_removed)
-            final_preview = draw_guidelines(processed.copy())
-            st.image(final_preview, caption="DV Compliance Preview")
+            st.subheader("🖼️ Background Removed")
+            st.image(bg_removed, use_column_width=True)
+        with col3:
+            st.subheader("✅ DV Compliant Preview")
+            st.image(final_preview, use_column_width=True)
 
-            # Download button
-            buf = io.BytesIO()
-            processed.save(buf, format="JPEG", quality=95)
-            buf.seek(0)
-            st.download_button(
-                "⬇️ Download DV Photo",
-                data=buf,
-                file_name="dvlottery_photo.jpg",
-                mime="image/jpeg"
-            )
+        # Download button
+        buf = io.BytesIO()
+        processed.save(buf, format="JPEG", quality=95)
+        buf.seek(0)
+        st.download_button(
+            "⬇️ Download DV Photo",
+            data=buf,
+            file_name="dvlottery_photo.jpg",
+            mime="image/jpeg"
+        )
+
     except Exception as e:
         st.error(f"❌ Could not process image: {e}")
