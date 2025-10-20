@@ -126,30 +126,49 @@ def draw_guidelines(img, head_info):
     head_ratio = head_height / canvas_size
     eye_ratio = (canvas_size - eye_y) / canvas_size
 
-    # Draw head vertical line (centered, full height)
+    # Define colors based on compliance
     head_color = "green" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "red"
-    draw.line([(cx, top_y), (cx, chin_y)], fill=head_color, width=4)
+    eye_color = "green" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "red"
+
+    # Draw head top line (short horizontal line)
+    draw.line([(cx-50, top_y), (cx+50, top_y)], fill="blue", width=3)
+    draw.text((cx+60, top_y-15), "Head Top", fill="blue")
+    
+    # Draw chin line (short horizontal line)  
+    draw.line([(cx-50, chin_y), (cx+50, chin_y)], fill="purple", width=3)
+    draw.text((cx+60, chin_y-15), "Chin", fill="purple")
+    
+    # Draw vertical head height line (from top to chin)
+    draw.line([(cx, top_y), (cx, chin_y)], fill=head_color, width=2)
     
     # Head ratio text
     head_text_y = (top_y + chin_y) // 2
-    draw.text((cx + 10, head_text_y - 20), f"Head {int(head_ratio*100)}%", fill=head_color)
-    draw.text((cx + 10, head_text_y), "Req 50-69%", fill="blue")
+    draw.text((cx + 10, head_text_y - 20), f"Head: {int(head_ratio*100)}%", fill=head_color)
+    draw.text((cx + 10, head_text_y), f"Req: {int(HEAD_MIN_RATIO*100)}-{int(HEAD_MAX_RATIO*100)}%", fill="blue")
 
     # Draw eye position guidelines
-    eye_color = "green" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "red"
-    eye_min_y = h - int(h * EYE_MAX_RATIO)  # 56% from top = 44% from bottom
-    eye_max_y = h - int(h * EYE_MIN_RATIO)  # 69% from top = 31% from bottom
+    eye_min_y = h - int(h * EYE_MAX_RATIO)  # 56% from top
+    eye_max_y = h - int(h * EYE_MIN_RATIO)  # 69% from top
     
-    # Eye range guidelines (green horizontal lines)
-    draw.line([(cx - 200, eye_min_y), (cx + 200, eye_min_y)], fill="green", width=2)
-    draw.line([(cx - 200, eye_max_y), (cx + 200, eye_max_y)], fill="green", width=2)
+    # Eye range guidelines (dashed green lines)
+    dash_length = 10
+    # Top eye guideline (56%)
+    for x in range(0, w, dash_length*2):
+        if x + dash_length <= w:
+            draw.line([(x, eye_min_y), (x+dash_length, eye_min_y)], fill="green", width=2)
+    draw.text((10, eye_min_y-15), "56%", fill="green")
     
-    # Actual eye position line (red/green horizontal line)
+    # Bottom eye guideline (69%)
+    for x in range(0, w, dash_length*2):
+        if x + dash_length <= w:
+            draw.line([(x, eye_max_y), (x+dash_length, eye_max_y)], fill="green", width=2)
+    draw.text((10, eye_max_y-15), "69%", fill="green")
+    
+    # Actual eye position line (solid red/green line)
     draw.line([(0, eye_y), (w, eye_y)], fill=eye_color, width=3)
     
     # Eye ratio text
-    draw.text((cx - 250, eye_y - 20), f"Eyes {int(eye_ratio*100)}%", fill=eye_color)
-    draw.text((cx - 250, eye_y), "Req 56-69%", fill="blue")
+    draw.text((w-150, eye_y-15), f"Eyes: {int(eye_ratio*100)}%", fill=eye_color)
 
     return img, head_ratio, eye_ratio
 
@@ -174,7 +193,9 @@ if uploaded_file:
                 'processed_with_lines': processed_with_lines,
                 'head_info': head_info,
                 'head_ratio': head_ratio,
-                'eye_ratio': eye_ratio
+                'eye_ratio': eye_ratio,
+                'needs_fix': (head_ratio < HEAD_MIN_RATIO or head_ratio > HEAD_MAX_RATIO or
+                             eye_ratio < EYE_MIN_RATIO or eye_ratio > EYE_MAX_RATIO)
             }
     
     # Get data from session state
@@ -185,6 +206,7 @@ if uploaded_file:
     head_info = data['head_info']
     head_ratio = data['head_ratio']
     eye_ratio = data['eye_ratio']
+    needs_fix = data['needs_fix']
     
     col1, col2 = st.columns(2)
     with col1:
@@ -195,40 +217,70 @@ if uploaded_file:
         st.subheader("✅ Processed Photo")
         st.image(processed_with_lines, caption="Processed Preview")
 
-        # Show metrics
-        c1, c2 = st.columns(2)
-        c1.metric("Head Height", f"{int(head_ratio*100)}%", "✅" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "❌")
-        c2.metric("Eye Position", f"{int(eye_ratio*100)}%", "✅" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "❌")
+        # Show compliance status
+        st.subheader("📊 Compliance Check")
+        
+        head_status = "✅ PASS" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "❌ FAIL"
+        eye_status = "✅ PASS" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "❌ FAIL"
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Head Height", f"{int(head_ratio*100)}%", head_status)
+            st.progress(min(head_ratio / HEAD_MAX_RATIO, 1.0))
+            
+        with col2:
+            st.metric("Eye Position", f"{int(eye_ratio*100)}%", eye_status)
+            st.progress(min(eye_ratio / EYE_MAX_RATIO, 1.0))
 
-        needs_fix = (head_ratio < HEAD_MIN_RATIO or head_ratio > HEAD_MAX_RATIO or
-                     eye_ratio < EYE_MIN_RATIO or eye_ratio > EYE_MAX_RATIO)
-
-        if needs_fix:
-            st.warning("⚠️ Some measurements are out of range.")
+        # Overall status
+        if not needs_fix:
+            st.success("🎉 ✅ All measurements within DV Lottery requirements!")
+        else:
+            st.error("⚠️ Some measurements are out of range.")
+            
+            # Manual fix button
             if st.button("🛠️ Fix Photo Measurements", use_container_width=True, type="primary"):
-                # Force complete reprocessing
+                # Show manual adjustment options
+                st.info("Manual adjustment options would go here...")
+                # For now, just reprocess
                 del st.session_state.processed_data
                 st.rerun()
-        else:
-            st.success("✅ All measurements within range!")
 
-        # Save download - use the processed image WITHOUT guidelines for download
-        buf = io.BytesIO()
-        processed.save(buf, format="JPEG", quality=95)
-        st.download_button("⬇️ Download Corrected DV Photo",
-                           buf.getvalue(),
-                           "dv_lottery_photo.jpg",
-                           "image/jpeg",
-                           use_container_width=True)
+        # Download section
+        st.subheader("📥 Download")
         
-        # Also provide option to download with guidelines
-        buf_with_guides = io.BytesIO()
-        processed_with_lines.save(buf_with_guides, format="JPEG", quality=95)
-        st.download_button("⬇️ Download with Guidelines",
-                           buf_with_guides.getvalue(),
-                           "dv_lottery_photo_with_guides.jpg",
-                           "image/jpeg",
-                           use_container_width=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            # Save download - use the processed image WITHOUT guidelines for download
+            buf = io.BytesIO()
+            processed.save(buf, format="JPEG", quality=95)
+            st.download_button("⬇️ Download Corrected Photo",
+                               buf.getvalue(),
+                               "dv_lottery_photo.jpg",
+                               "image/jpeg",
+                               use_container_width=True)
+        
+        with col2:
+            # Also provide option to download with guidelines
+            buf_with_guides = io.BytesIO()
+            processed_with_lines.save(buf_with_guides, format="JPEG", quality=95)
+            st.download_button("⬇️ Download with Guidelines",
+                               buf_with_guides.getvalue(),
+                               "dv_lottery_photo_with_guides.jpg",
+                               "image/jpeg",
+                               use_container_width=True)
+
+        # Requirements info
+        with st.expander("📋 DV Lottery Photo Requirements"):
+            st.markdown("""
+            **Head Height:** 50% - 69% of photo height  
+            **Eye Position:** 56% - 69% from bottom (31% - 44% from top)  
+            **Photo Size:** 600x600 pixels  
+            **Background:** Plain white or off-white  
+            **Format:** JPEG  
+            **Quality:** High resolution, no compression artifacts
+            """)
+            
 else:
     st.info("👆 Upload a photo to start.")
     # Clear session state when no file is uploaded
