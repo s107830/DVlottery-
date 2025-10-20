@@ -112,14 +112,14 @@ if uploaded_file:
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("📤 Original Photo")
-            st.image(orig, use_container_width=True)
+            st.image(orig)  # removed use_container_width
 
         with col2:
             st.subheader("✅ Processed (DV Compliant)")
             bg_removed = remove_background(orig)
             processed = crop_and_resize(bg_removed)
             final_preview = draw_guidelines(processed.copy())
-            st.image(final_preview, use_container_width=True, caption="DV Compliance Preview")
+            st.image(final_preview, caption="DV Compliance Preview")  # removed use_container_width
 
             # Download button
             buf = io.BytesIO()
