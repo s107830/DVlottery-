@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import io
 import os
-from cvzone.SelfiSegmentationModule import SelfiSegmentation
+from rembg import remove
 
 # ===============================
 # Config
@@ -17,25 +17,29 @@ if not os.path.isfile(CASCADE_PATH):
     st.stop()
 
 face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
-segmentor = SelfiSegmentation()
 
 # ===============================
 # Helper functions
 # ===============================
 def replace_background_white(np_img):
-    """Use AI segmentation to replace the background with white."""
-    img_rgb = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
-    # 'threshold' must be positional for cvzone<=1.6.1
-    segmented = segmentor.removeBG(img_rgb, (255, 255, 255), 0.7)
-    return cv2.cvtColor(segmented, cv2.COLOR_RGB2BGR)
+    """Use rembg (AI) to remove background and fill with white."""
+    rgb = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
+    img_pil = Image.fromarray(rgb)
+    # Remove background
+    output = remove(img_pil)
+    # Convert output with alpha (transparent) to white background
+    rgba = np.array(output)
+    if rgba.shape[2] == 4:  # has alpha
+        alpha = rgba[:, :, 3] / 255.0
+        white_bg = np.ones_like(rgba[:, :, :3], dtype=np.uint8) * 255
+        composite = white_bg * (1 - alpha[:, :, None]) + rgba[:, :, :3] * alpha[:, :, None]
+        result = composite.astype(np.uint8)
+    else:
+        result = rgba
+    return cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
 
 def auto_crop_dv(image: Image.Image, final_size=FINAL_SIZE):
-    """
-    Auto-crop photo to U.S. DV standard:
-      - 600x600px
-      - head occupies 50–69% of image height
-      - centered shoulders
-    """
+    """Auto-crop to DV standard (600x600, head 50–69%)."""
     image = image.convert("RGB")
     np_img = np.array(image)
     bgr = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
@@ -48,24 +52,21 @@ def auto_crop_dv(image: Image.Image, final_size=FINAL_SIZE):
     faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(100, 100))
     if len(faces) == 0:
         raise Exception("No face detected. Please upload a clear, frontal photo.")
-
-    # use largest face
     x, y, w, h = max(faces, key=lambda f: f[2]*f[3])
     height, width = processed.shape[:2]
 
-    # Estimate top of head (slightly above detected face)
+    # Estimate top of head and chin
     head_top = max(0, int(y - 0.25*h))
     chin_bottom = min(height, int(y + h + 0.10*h))
     head_height = chin_bottom - head_top
 
-    # Target head ratio (0.5–0.69 range)
+    # Adjust crop for DV ratio
     target_ratio = 0.60
     target_crop_h = int(head_height / target_ratio)
     center_y = int((head_top + chin_bottom) / 2)
     top = max(0, center_y - target_crop_h // 2)
     bottom = min(height, top + target_crop_h)
 
-    # Center horizontally and include shoulders
     center_x = x + w // 2
     crop_width = target_crop_h
     left = max(0, center_x - crop_width // 2)
@@ -73,7 +74,7 @@ def auto_crop_dv(image: Image.Image, final_size=FINAL_SIZE):
 
     crop_img = processed[top:bottom, left:right]
 
-    # Pad to square with white if needed
+    # Pad to square
     c_h, c_w = crop_img.shape[:2]
     if c_h > c_w:
         pad = (c_h - c_w) // 2
@@ -82,7 +83,6 @@ def auto_crop_dv(image: Image.Image, final_size=FINAL_SIZE):
         pad = (c_w - c_h) // 2
         crop_img = cv2.copyMakeBorder(crop_img, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=[255, 255, 255])
 
-    # Resize to final 600x600
     resized = cv2.resize(crop_img, (final_size, final_size), interpolation=cv2.INTER_AREA)
     final_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
     return Image.fromarray(final_rgb)
@@ -90,11 +90,15 @@ def auto_crop_dv(image: Image.Image, final_size=FINAL_SIZE):
 # ===============================
 # Streamlit UI
 # ===============================
-st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("🧠 DV Lottery Smart Photo Editor")
+st.set_page_config(page_title="DV Lottery Pro Photo Editor", layout="wide")
+st.title("📸 DV Lottery Pro Photo Editor (AI Background Removal)")
 st.markdown(
-    "Automatically crop, center, and whiten your background per **U.S. Visa / DV Lottery Photo Standards**. "
-    "Final output: 600×600 px (2×2 inch @ 300 DPI) with head height 50–69% of frame."
+    """
+    ✨ **Features**
+    - AI-based background removal (studio-white)
+    - Automatic head ratio (50–69% of image height)
+    - 2×2 inch (600×600 px) per U.S. Visa standards
+    """
 )
 
 uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG)", type=["jpg", "jpeg"])
