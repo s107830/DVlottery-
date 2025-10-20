@@ -1,6 +1,6 @@
 streamlit==1.39.0
 Pillow==10.4.0
-opencv-python-headless==4.10.0.84
+opencv-python-headless==4.8.1.78
 numpy==1.26.4
 rembg==2.0.59
 onnxruntime==1.19.2
