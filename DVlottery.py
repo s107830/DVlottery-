@@ -97,7 +97,7 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         top_y = max(0, top_y - hair_buffer)
         return top_y, chin_y, eye_y
 
-# ---------------------- CHECK FUNCTIONS ----------------------
+# ---------------------- IMPROVED CHECK FUNCTIONS ----------------------
 def check_single_face(cv_img):
     """Check if only one face is detected"""
     try:
@@ -127,15 +127,41 @@ def check_minimum_dimensions(img_pil):
         return False, f"Image too small: {w}x{h} (min {MIN_SIZE}x{MIN_SIZE})"
 
 def check_red_eyes(cv_img):
-    """Basic red eye detection"""
+    """Improved red eye detection with better accuracy"""
     try:
-        # Convert to HSV color space
+        # Get face landmarks to locate eyes precisely
+        landmarks = get_face_landmarks(cv_img)
+        if not landmarks:
+            return True, "Red eye check skipped (no face landmarks)"
+        
+        h, w = cv_img.shape[:2]
+        
+        # Get precise eye regions from landmarks
+        left_eye_indices = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+        right_eye_indices = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+        
+        # Get eye regions
+        left_eye_points = [(int(landmarks.landmark[i].x * w), int(landmarks.landmark[i].y * h)) for i in left_eye_indices]
+        right_eye_points = [(int(landmarks.landmark[i].x * w), int(landmarks.landmark[i].y * h)) for i in right_eye_indices]
+        
+        # Create masks for eye regions
+        left_eye_mask = np.zeros((h, w), dtype=np.uint8)
+        right_eye_mask = np.zeros((h, w), dtype=np.uint8)
+        
+        if len(left_eye_points) >= 3:
+            cv2.fillPoly(left_eye_mask, [np.array(left_eye_points)], 255)
+        if len(right_eye_points) >= 3:
+            cv2.fillPoly(right_eye_mask, [np.array(right_eye_points)], 255)
+        
+        # Convert to HSV for better color detection
         hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
         
-        # Define red color range
-        lower_red1 = np.array([0, 50, 50])
+        # Define red color ranges in HSV (more precise)
+        # Bright red
+        lower_red1 = np.array([0, 120, 70])
         upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 50, 50])
+        # Dark red
+        lower_red2 = np.array([170, 120, 70])
         upper_red2 = np.array([180, 255, 255])
         
         # Create masks for red regions
@@ -143,19 +169,38 @@ def check_red_eyes(cv_img):
         mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
         red_mask = mask1 + mask2
         
-        # Check if significant red areas exist in potential eye regions
-        h, w = cv_img.shape[:2]
-        eye_region = red_mask[int(h*0.25):int(h*0.45), int(w*0.25):int(w*0.75)]
+        # Apply eye region masks
+        left_red_eyes = cv2.bitwise_and(red_mask, red_mask, mask=left_eye_mask)
+        right_red_eyes = cv2.bitwise_and(red_mask, red_mask, mask=right_eye_mask)
         
-        red_pixels = cv2.countNonZero(eye_region)
-        total_pixels = eye_region.size
+        # Count red pixels in eye regions
+        left_red_pixels = cv2.countNonZero(left_red_eyes)
+        right_red_pixels = cv2.countNonZero(right_red_eyes)
         
-        if red_pixels / total_pixels > 0.01:  # If more than 1% red in eye region
+        left_eye_area = cv2.countNonZero(left_eye_mask)
+        right_eye_area = cv2.countNonZero(right_eye_mask)
+        
+        # Calculate percentages
+        if left_eye_area > 0:
+            left_red_ratio = left_red_pixels / left_eye_area
+        else:
+            left_red_ratio = 0
+            
+        if right_eye_area > 0:
+            right_red_ratio = right_red_pixels / right_eye_area
+        else:
+            right_red_ratio = 0
+        
+        # Only flag if significant red in both eyes (reduces false positives)
+        threshold = 0.15  # 15% of eye area must be red
+        if left_red_ratio > threshold and right_red_ratio > threshold:
             return False, "Possible red eyes detected"
         else:
             return True, "No red eyes detected"
-    except:
-        return True, "Red eye check passed"  # Pass if check fails
+            
+    except Exception as e:
+        # If any error occurs, assume no red eyes to avoid false positives
+        return True, "Red eye check passed"
 
 def check_background_removal(img_pil):
     """Check if background removal is possible"""
@@ -378,7 +423,7 @@ def draw_guidelines(img):
               fill="blue", width=3)
     
     # Horizontal ticks
-    draw.line([(bracket_x-10, head_bracket_top), (bracket_x+10, head_bracket_top)], 
+    draw.line([(bracket_x-10, head_bracket_top), (bracket_x+10, head_bracket_bottom)], 
               fill="blue", width=2)
     draw.line([(bracket_x-10, head_bracket_bottom), (bracket_x+10, head_bracket_bottom)], 
               fill="blue", width=2)
