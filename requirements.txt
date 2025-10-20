@@ -5,4 +5,3 @@ numpy==1.26.4
 rembg==2.0.59
 onnxruntime==1.19.2
 protobuf==5.27.3
-tqdm==4.66.4
