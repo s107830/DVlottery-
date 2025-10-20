@@ -11,6 +11,7 @@ HEAD_MIN_PX = 300
 HEAD_MAX_PX = 414
 EYE_LINE_MIN_PX = 336
 EYE_LINE_MAX_PX = 414
+BG_COLOR = (255, 255, 255)
 
 # --- Helper: Detect face using OpenCV Haar cascade ---
 def detect_face(image_bgr):
@@ -19,12 +20,10 @@ def detect_face(image_bgr):
     faces = face_cascade.detectMultiScale(gray, 1.1, 5)
 
     if len(faces) == 0:
-        h, w = gray.shape
-        return (int(w * 0.3), int(h * 0.25), int(w * 0.4), int(h * 0.5))
-    else:
-        # return the largest detected face
-        faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
-        return faces[0]
+        return None
+    # return the largest detected face
+    faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
+    return tuple(faces[0])  # Convert np array to tuple
 
 # --- Background remover with professional cleanup ---
 def remove_background_smooth(img_pil):
@@ -37,18 +36,40 @@ def remove_background_smooth(img_pil):
     fg_np = np.array(fg)
     alpha = fg_np[:, :, 3].astype(np.float32) / 255.0
 
-    # Clean mask
+    # Clean mask edges
     kernel = np.ones((3, 3), np.uint8)
     alpha = cv2.erode(alpha, kernel, iterations=1)
     alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
 
-    # Decontaminate edges (make them white)
     fg_rgb = fg_np[:, :, :3].astype(np.float32)
     bg_white = np.ones_like(fg_rgb) * 255.0
     clean_rgb = fg_rgb * alpha[..., None] + bg_white * (1 - alpha[..., None])
 
     clean_img = Image.fromarray(np.uint8(clean_rgb))
     return clean_img.convert("RGB")
+
+# --- Auto crop & center face based on detection ---
+def auto_center_crop(image_pil, face_box):
+    img_np = np.array(image_pil)
+    h, w, _ = img_np.shape
+
+    if not face_box:
+        return image_pil.resize((FINAL_PX, FINAL_PX))
+
+    x, y, fw, fh = face_box
+    cx = x + fw // 2
+    cy = y + fh // 2
+
+    # Crop area centered on face
+    crop_size = int(max(fw, fh) * 2.5)
+    left = max(0, cx - crop_size // 2)
+    top = max(0, cy - crop_size // 2)
+    right = min(w, cx + crop_size // 2)
+    bottom = min(h, cy + crop_size // 2)
+
+    cropped = img_np[top:bottom, left:right]
+    square = cv2.resize(cropped, (FINAL_PX, FINAL_PX), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(square)
 
 # --- Draw DV photo guidelines dynamically ---
 def draw_guidelines(img, face_box=None):
@@ -58,7 +79,7 @@ def draw_guidelines(img, face_box=None):
     # Outer border
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline="gray", width=2)
 
-    if face_box:
+    if face_box is not None:
         (x, y, w_face, h_face) = face_box
         head_top = max(0, int(y - 0.25 * h_face))
         chin = int(y + h_face + 0.05 * h_face)
@@ -76,7 +97,7 @@ def draw_guidelines(img, face_box=None):
         draw.text((60, head_top + 10), f"Head height ≈ {head_height_px}px", fill="blue")
         draw.text((60, eye_y + 10), "Eye line", fill="green")
 
-        # Red alert if not within DV spec
+        # Validation
         if head_height_px < HEAD_MIN_PX or head_height_px > HEAD_MAX_PX:
             st.error(f"⚠️ Head height ({head_height_px}px) is out of DV range (300–414px).")
         if eye_y < EYE_LINE_MIN_PX or eye_y > EYE_LINE_MAX_PX:
@@ -99,7 +120,7 @@ def draw_guidelines(img, face_box=None):
 # --- Streamlit UI ---
 st.set_page_config(page_title="DV Photo Auto Guideline", layout="wide")
 st.title("🧍‍♂️ U.S. DV Photo Auto Guideline Generator")
-st.write("Upload your photo — the system will auto-remove the background, detect face position, and overlay official DV guidelines (600×600 px).")
+st.write("Upload your photo — automatically removes background, centers, and overlays official DV guidelines (600×600 px).")
 
 uploaded = st.file_uploader("Upload your photo", type=["jpg", "jpeg", "png"])
 
@@ -108,18 +129,16 @@ if uploaded:
 
     with st.spinner("Processing photo..."):
         cleaned = remove_background_smooth(image)
-        cleaned = cleaned.resize((FINAL_PX, FINAL_PX))
-
-        # Detect face for guideline placement
         image_rgb = np.array(cleaned)
         image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
         face_box = detect_face(image_bgr)
 
-        final_preview = draw_guidelines(cleaned.copy(), face_box=face_box)
+        centered = auto_center_crop(cleaned, face_box)
+        centered = centered.resize((FINAL_PX, FINAL_PX))
+        final_preview = draw_guidelines(centered.copy(), face_box=face_box)
 
     st.image(final_preview, caption="DV Photo with Guidelines", use_container_width=True)
 
-    # Download option
     buf = io.BytesIO()
     final_preview.save(buf, format="JPEG")
     byte_im = buf.getvalue()
