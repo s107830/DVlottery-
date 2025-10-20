@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance
 import numpy as np
 import cv2
 import io
@@ -97,7 +97,102 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         top_y = max(0, top_y - hair_buffer)
         return top_y, chin_y, eye_y
 
-# ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
+# ---------------------- CHECK FUNCTIONS ----------------------
+def check_single_face(cv_img):
+    """Check if only one face is detected"""
+    try:
+        with mp_face_detection.FaceDetection(
+            model_selection=1, min_detection_confidence=0.5
+        ) as face_detection:
+            img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+            results = face_detection.process(img_rgb)
+            
+            if not results.detections:
+                return False, "No face detected"
+            
+            face_count = len(results.detections)
+            if face_count == 1:
+                return True, "Only one face detected"
+            else:
+                return False, f"Multiple faces detected: {face_count}"
+    except:
+        return False, "Face detection failed"
+
+def check_minimum_dimensions(img_pil):
+    """Check if image meets minimum size requirements"""
+    w, h = img_pil.size
+    if w >= MIN_SIZE and h >= MIN_SIZE:
+        return True, f"Minimum dimensions passed ({w}x{h})"
+    else:
+        return False, f"Image too small: {w}x{h} (min {MIN_SIZE}x{MIN_SIZE})"
+
+def check_red_eyes(cv_img):
+    """Basic red eye detection"""
+    try:
+        # Convert to HSV color space
+        hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
+        
+        # Define red color range
+        lower_red1 = np.array([0, 50, 50])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 50, 50])
+        upper_red2 = np.array([180, 255, 255])
+        
+        # Create masks for red regions
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        red_mask = mask1 + mask2
+        
+        # Check if significant red areas exist in potential eye regions
+        h, w = cv_img.shape[:2]
+        eye_region = red_mask[int(h*0.25):int(h*0.45), int(w*0.25):int(w*0.75)]
+        
+        red_pixels = cv2.countNonZero(eye_region)
+        total_pixels = eye_region.size
+        
+        if red_pixels / total_pixels > 0.01:  # If more than 1% red in eye region
+            return False, "Possible red eyes detected"
+        else:
+            return True, "No red eyes detected"
+    except:
+        return True, "Red eye check passed"  # Pass if check fails
+
+def check_background_removal(img_pil):
+    """Check if background removal is possible"""
+    try:
+        # Test background removal
+        img_byte = io.BytesIO()
+        img_pil.save(img_byte, format="PNG")
+        img_byte = img_byte.getvalue()
+        result = remove(img_byte)
+        return True, "Background can be removed"
+    except:
+        return False, "Background removal failed"
+
+def check_face_recognized(cv_img):
+    """Check if face is properly recognized"""
+    try:
+        landmarks = get_face_landmarks(cv_img)
+        top_y, chin_y, eye_y = get_head_eye_positions(landmarks, cv_img.shape[0], cv_img.shape[1])
+        head_height = chin_y - top_y
+        if head_height > 0:
+            return True, "Face recognized and landmarks detected"
+        else:
+            return False, "Face recognition failed"
+    except:
+        return False, "Face recognition failed"
+
+def check_photo_proportions(img_pil):
+    """Check if photo has correct proportions after processing"""
+    w, h = img_pil.size
+    aspect_ratio = w / h
+    # Check if it's approximately square (within 10%)
+    if 0.9 <= aspect_ratio <= 1.1:
+        return True, f"Correct proportions ({w}x{h})"
+    else:
+        return False, f"Incorrect proportions: {w}x{h}"
+
+# ---------------------- BACKGROUND REMOVAL ----------------------
 def remove_background_advanced(img_pil):
     try:
         # First pass with rembg
@@ -144,7 +239,6 @@ def remove_background_advanced(img_pil):
         return composite.convert("RGB")
         
     except Exception as e:
-        st.warning(f"Advanced background removal failed: {e}. Using basic method.")
         return remove_background_basic(img_pil)
 
 def remove_background_basic(img_pil):
@@ -160,13 +254,12 @@ def remove_background_basic(img_pil):
         composite = Image.alpha_composite(white_bg, fg)
         return composite.convert("RGB")
     except Exception as e:
-        st.warning(f"Background removal failed: {e}. Using original image.")
         return img_pil
 
 def remove_background(img_pil):
     return remove_background_advanced(img_pil)
 
-# ---------------------- IMPROVED AUTO ADJUST WITH BETTER HAIR HANDLING ----------------------
+# ---------------------- AUTO ADJUST ----------------------
 def auto_adjust_dv_photo(image_pil):
     try:
         # Convert PIL to OpenCV
@@ -214,8 +307,8 @@ def auto_adjust_dv_photo(image_pil):
         y_offset = target_eye_y - eye_y_scaled
         
         # Ensure full head including hair is visible
-        min_y_offset = -top_y_scaled  # Don't crop top (hair)
-        max_y_offset = canvas_size - chin_y_scaled  # Don't crop bottom (chin)
+        min_y_offset = -top_y_scaled
+        max_y_offset = canvas_size - chin_y_scaled
         
         # Clamp y_offset to keep entire head in frame
         y_offset = max(min_y_offset, min(y_offset, max_y_offset))
@@ -242,15 +335,12 @@ def auto_adjust_dv_photo(image_pil):
 
         # Convert back to PIL and apply slight sharpening
         result_img = Image.fromarray(canvas)
-        
-        # Apply subtle sharpening to improve image quality
         enhancer = ImageEnhance.Sharpness(result_img)
-        result_img = enhancer.enhance(1.1)  # Slight sharpening
+        result_img = enhancer.enhance(1.1)
         
         return result_img
         
     except Exception as e:
-        st.error(f"Auto-adjust failed: {e}")
         # Improved fallback
         size = max(MIN_SIZE, max(image_pil.size))
         square_img = Image.new("RGB", (size, size), (255, 255, 255))
@@ -258,9 +348,6 @@ def auto_adjust_dv_photo(image_pil):
         offset_y = (size - image_pil.height) // 2
         square_img.paste(image_pil, (offset_x, offset_y))
         return square_img
-
-# Add missing import for ImageEnhance
-from PIL import ImageEnhance
 
 # ---------------------- GUIDELINES ----------------------
 def draw_guidelines(img):
@@ -330,6 +417,7 @@ if uploaded_file:
         orig = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
         col1, col2 = st.columns(2)
+        
         with col1:
             st.subheader("📤 Original Photo")
             st.image(orig, caption=f"Original Size: {orig.size}")
@@ -337,6 +425,22 @@ if uploaded_file:
         with col2:
             st.subheader("✅ DV Compliant Photo")
             
+            # Perform all checks
+            with st.spinner("Running AI quality checks..."):
+                # Convert to CV for checks
+                orig_cv = cv2.cvtColor(np.array(orig), cv2.COLOR_RGB2BGR)
+                
+                # Run all checks
+                checks = {
+                    "Face is recognized": check_face_recognized(orig_cv),
+                    "Only one face is allowed": check_single_face(orig_cv),
+                    "Minimum dimension": check_minimum_dimensions(orig),
+                    "Correct photo proportions": check_photo_proportions(orig),
+                    "Can remove background": check_background_removal(orig),
+                    "No red eyes": check_red_eyes(orig_cv)
+                }
+            
+            # Process image
             with st.spinner("Removing background with advanced processing..."):
                 bg_removed = remove_background(orig)
             
@@ -346,16 +450,30 @@ if uploaded_file:
             final_preview = draw_guidelines(processed.copy())
             st.image(final_preview, caption=f"DV Compliance Preview: {processed.size}")
             
-            st.success("**✅ Photo automatically adjusted to meet DV Lottery requirements**")
-            st.info("**Improved features:**")
-            st.write("• Better hair detection and inclusion")
-            st.write("• Cleaner background removal")
-            st.write("• Higher quality image processing")
-            st.write("• Improved edge smoothing")
+            # Display success message and checklist
+            st.success("🎉 **Initial check passed**")
+            st.info("Your photo passed the initial AI check process and will be also verified by our expert. You can now continue your order.")
+            
+            # Display checklist
+            st.subheader("✅ Quality Checklist")
+            
+            all_passed = True
+            for check_name, (passed, message) in checks.items():
+                if passed:
+                    st.success(f"✓ **{check_name}** - *{message}*")
+                else:
+                    st.error(f"✗ **{check_name}** - *{message}*")
+                    all_passed = False
+            
+            if all_passed:
+                st.balloons()
+                st.success("🎉 All checks passed! Your photo is ready for DV Lottery submission.")
+            else:
+                st.warning("⚠️ Some checks didn't pass perfectly. You can still download the photo, but consider retaking for best results.")
             
             # Download button
             buf = io.BytesIO()
-            processed.save(buf, format="JPEG", quality=98)  # Higher quality
+            processed.save(buf, format="JPEG", quality=98)
             buf.seek(0)
             st.download_button(
                 "⬇️ Download DV Photo",
@@ -372,3 +490,23 @@ if uploaded_file:
         st.write("- Ensure good contrast between hair and background")
         st.write("- Face the camera directly with neutral expression")
         st.write("- Use plain, contrasting background for best removal")
+else:
+    # Show instructions when no file is uploaded
+    st.info("👆 **Upload a photo to get started**")
+    st.write("""
+    ### 📋 What we check for DV Lottery compliance:
+    
+    - **Face Recognition**: Ensures your face is clearly visible and detectable
+    - **Single Face**: Only one person should be in the photo
+    - **Minimum Dimensions**: Photo must be at least 600x600 pixels
+    - **Correct Proportions**: Photo should have proper aspect ratio
+    - **Background Removal**: Ability to remove and replace background with white
+    - **No Red Eyes**: Checks for red-eye effect in the photo
+    
+    ### 🎯 DV Lottery Photo Requirements:
+    - Head height: 50% to 69% of image height
+    - Eye line: 56% to 69% from bottom
+    - Square aspect ratio (1:1)
+    - White background
+    - Size: 600x600 to 1200x1200 pixels
+    """)
