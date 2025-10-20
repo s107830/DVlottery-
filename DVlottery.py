@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw
 import numpy as np
 import cv2
 import io
@@ -29,7 +29,6 @@ def remove_background(img_pil):
     return composite.convert("RGB")
 
 def detect_face(cv_img):
-    """Detect largest face in an image using Haar Cascade."""
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
@@ -39,7 +38,6 @@ def detect_face(cv_img):
     return x, y, w, h
 
 def crop_and_resize(image_pil):
-    """Crop around face and resize to DV 2x2 inch ratio."""
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     x, y, w, h = detect_face(image_bgr)
@@ -66,7 +64,6 @@ def crop_and_resize(image_pil):
     return Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
 
 def draw_guidelines(img):
-    """Draw DV photo size guides."""
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
@@ -97,11 +94,6 @@ def draw_guidelines(img):
     draw.text((10, 10), "2x2 inch (51x51 mm)", fill="black")
     return img
 
-def add_border_and_padding(img, padding=10):
-    """Add subtle border and padding for Streamlit display."""
-    bordered = ImageOps.expand(img, border=padding, fill="gray")
-    return bordered
-
 # ---------------------- STREAMLIT UI ----------------------
 
 uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG)", type=["jpg", "jpeg"])
@@ -113,17 +105,18 @@ if uploaded_file:
         if orig.mode != "RGB":
             orig = orig.convert("RGB")
 
+        # Two equal columns
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("📤 Original Photo")
-            st.image(add_border_and_padding(orig), caption="Original", use_column_width=False)
+            st.image(orig, caption="Original")  # keep natural size for perfect alignment
 
         with col2:
             st.subheader("✅ Processed (DV Compliant)")
             bg_removed = remove_background(orig)
             processed = crop_and_resize(bg_removed)
             final_preview = draw_guidelines(processed.copy())
-            st.image(add_border_and_padding(final_preview), caption="DV Compliance Preview", use_column_width=False)
+            st.image(final_preview, caption="DV Compliance Preview")  # same size, aligned
 
             # Download button
             buf = io.BytesIO()
