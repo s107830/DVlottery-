@@ -1,8 +1,8 @@
 streamlit==1.39.0
 Pillow==10.4.0
-opencv-python==4.8.1.78
 numpy==1.26.4
 rembg==2.0.59
 onnxruntime==1.19.2
 protobuf>=4.25.3,<5
 mediapipe==0.10.21
+opencv-python-headless==4.9.0.80
