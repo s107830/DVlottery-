@@ -1,162 +1,126 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
 import cv2
-import io
+from PIL import Image, ImageDraw
 from rembg import remove
+import io
 
-# ---------------------- STREAMLIT SETUP ----------------------
-st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("📸 DV Lottery Photo Editor — Auto Crop, Background & DV Guidelines")
+# --- Constants ---
+FINAL_PX = 600
+HEAD_MIN_PX = 300
+HEAD_MAX_PX = 414
+EYE_LINE_MIN_PX = 336
+EYE_LINE_MAX_PX = 414
 
-# ---------------------- CONSTANTS ----------------------
-FINAL_PX = 600            # 2x2 inch photo
-HEAD_MIN_RATIO = 0.50     # 50% of image height (300 px)
-HEAD_MAX_RATIO = 0.69     # 69% of image height (414 px)
-EYE_MIN_RATIO = 0.56      # 56% of height from bottom
-EYE_MAX_RATIO = 0.69      # 69% of height from bottom
-BG_COLOR = (255, 255, 255)
+# --- Helper: Detect face using OpenCV Haar cascade ---
+def detect_face(image_bgr):
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    faces = face_cascade.detectMultiScale(gray, 1.1, 5)
 
-# ---------------------- FUNCTIONS ----------------------
+    if len(faces) == 0:
+        h, w = gray.shape
+        return (int(w * 0.3), int(h * 0.25), int(w * 0.4), int(h * 0.5))
+    else:
+        # return the largest detected face
+        faces = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)
+        return faces[0]
 
+# --- Background remover with professional cleanup ---
 def remove_background_smooth(img_pil):
-    """Remove background and smooth hair edges."""
+    """Remove background and fully clean edge halo."""
     img_byte = io.BytesIO()
     img_pil.save(img_byte, format="PNG")
-    img_byte = img_byte.getvalue()
-    result = remove(img_byte)
+    result = remove(img_byte.getvalue())
+
     fg = Image.open(io.BytesIO(result)).convert("RGBA")
+    fg_np = np.array(fg)
+    alpha = fg_np[:, :, 3].astype(np.float32) / 255.0
 
-    alpha = fg.split()[3]
-    alpha_np = np.array(alpha)
+    # Clean mask
     kernel = np.ones((3, 3), np.uint8)
-    alpha_np = cv2.dilate(alpha_np, kernel, iterations=1)
-    alpha_np = cv2.GaussianBlur(alpha_np, (5, 5), 0)
-    alpha = Image.fromarray(alpha_np)
-    fg.putalpha(alpha)
+    alpha = cv2.erode(alpha, kernel, iterations=1)
+    alpha = cv2.GaussianBlur(alpha, (3, 3), 0)
 
-    white_bg = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-    composite = Image.alpha_composite(white_bg, fg)
-    return composite.convert("RGB")
+    # Decontaminate edges (make them white)
+    fg_rgb = fg_np[:, :, :3].astype(np.float32)
+    bg_white = np.ones_like(fg_rgb) * 255.0
+    clean_rgb = fg_rgb * alpha[..., None] + bg_white * (1 - alpha[..., None])
 
-def detect_face(cv_img):
-    """Detect face bounding box."""
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
-    if len(faces) == 0:
-        raise Exception("No face detected. Please upload a clear, frontal photo.")
-    return max(faces, key=lambda f: f[2] * f[3])  # largest face
+    clean_img = Image.fromarray(np.uint8(clean_rgb))
+    return clean_img.convert("RGB")
 
-def crop_and_resize(image_pil):
-    """Crop around face and resize to 600x600."""
-    image_rgb = np.array(image_pil)
-    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
-    x, y, w, h = detect_face(image_bgr)
-
-    height, width = image_bgr.shape[:2]
-    top = max(0, y - int(0.45 * h))
-    bottom = min(height, y + h + int(0.35 * h))
-    left = max(0, x - int(0.25 * w))
-    right = min(width, x + w + int(0.25 * w))
-    cropped = image_bgr[top:bottom, left:right]
-
-    # pad to square
-    c_h, c_w = cropped.shape[:2]
-    diff = abs(c_h - c_w)
-    if c_h > c_w:
-        pad = (diff // 2, diff - diff // 2)
-        cropped = cv2.copyMakeBorder(cropped, 0, 0, pad[0], pad[1], cv2.BORDER_CONSTANT, value=BG_COLOR)
-    elif c_w > c_h:
-        pad = (diff // 2, diff - diff // 2)
-        cropped = cv2.copyMakeBorder(cropped, pad[0], pad[1], 0, 0, cv2.BORDER_CONSTANT, value=BG_COLOR)
-
-    resized = cv2.resize(cropped, (FINAL_PX, FINAL_PX), interpolation=cv2.INTER_AREA)
-    return Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)), (x, y, w, h)
-
-def draw_guidelines(img):
-    """Draw official DV guideline overlay."""
+# --- Draw DV photo guidelines dynamically ---
+def draw_guidelines(img, face_box=None):
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
-    # center dashed vertical line
-    for y in range(0, h, 10):
-        draw.line([(w // 2, y), (w // 2, y + 5)], fill="gray", width=1)
-
-    # Head height range (50–69%)
-    head_top = int(h * (1 - HEAD_MAX_RATIO) / 2)
-    head_bottom = h - head_top
-    draw.line([(0, head_top), (w, head_top)], fill="blue", width=2)
-    draw.line([(0, head_bottom), (w, head_bottom)], fill="blue", width=2)
-    draw.text((10, head_top + 5), "Head height: 300–414 px (50–69%)", fill="blue")
-
-    # Eye position range (56–69% from bottom)
-    eye_min_y = h - int(h * EYE_MAX_RATIO)
-    eye_max_y = h - int(h * EYE_MIN_RATIO)
-    draw.line([(0, eye_min_y), (w, eye_min_y)], fill="green", width=2)
-    draw.line([(0, eye_max_y), (w, eye_max_y)], fill="green", width=2)
-    draw.text((10, eye_min_y - 15), "Eye line: 336–414 px from bottom", fill="green")
-
-    # Border & label
+    # Outer border
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline="gray", width=2)
-    draw.text((10, 10), "2x2 inch (600x600 px)", fill="black")
+
+    if face_box:
+        (x, y, w_face, h_face) = face_box
+        head_top = max(0, int(y - 0.25 * h_face))
+        chin = int(y + h_face + 0.05 * h_face)
+
+        # Blue head height lines
+        draw.line([(50, head_top), (w - 50, head_top)], fill="blue", width=2)
+        draw.line([(50, chin), (w - 50, chin)], fill="blue", width=2)
+
+        # Eye line (mid-face)
+        eye_y = y + int(h_face * 0.45)
+        draw.line([(50, eye_y), (w - 50, eye_y)], fill="green", width=2)
+
+        # Height display
+        head_height_px = chin - head_top
+        draw.text((60, head_top + 10), f"Head height ≈ {head_height_px}px", fill="blue")
+        draw.text((60, eye_y + 10), "Eye line", fill="green")
+
+        # Red alert if not within DV spec
+        if head_height_px < HEAD_MIN_PX or head_height_px > HEAD_MAX_PX:
+            st.error(f"⚠️ Head height ({head_height_px}px) is out of DV range (300–414px).")
+        if eye_y < EYE_LINE_MIN_PX or eye_y > EYE_LINE_MAX_PX:
+            st.warning(f"⚠️ Eye line ({eye_y}px) is outside 336–414px range.")
+    else:
+        draw.text((10, 10), "No face detected", fill="red")
+
+    # Inch reference marks
+    inch_px = FINAL_PX // 2
+    for i in range(1, 2):
+        y_line = i * inch_px
+        draw.line([(0, y_line), (15, y_line)], fill="black", width=2)
+        draw.text((20, y_line - 10), f"{i} inch", fill="black")
+        draw.line([(y_line, 0), (y_line, 15)], fill="black", width=2)
+        draw.text((y_line - 15, 20), f"{i} inch", fill="black")
+
+    draw.text((10, 10), "2x2 inch (51x51 mm)", fill="black")
     return img
 
-def check_head_ratio(face_box, img_height):
-    """Check if head height is within DV limits."""
-    _, y, _, h = face_box
-    ratio = h / img_height
-    if ratio < HEAD_MIN_RATIO:
-        return f"⚠️ Head too small ({ratio:.2f}), increase zoom or move closer."
-    elif ratio > HEAD_MAX_RATIO:
-        return f"⚠️ Head too large ({ratio:.2f}), move farther or crop less."
-    return "✅ Head size within DV requirements."
+# --- Streamlit UI ---
+st.set_page_config(page_title="DV Photo Auto Guideline", layout="wide")
+st.title("🧍‍♂️ U.S. DV Photo Auto Guideline Generator")
+st.write("Upload your photo — the system will auto-remove the background, detect face position, and overlay official DV guidelines (600×600 px).")
 
-# ---------------------- STREAMLIT UI ----------------------
+uploaded = st.file_uploader("Upload your photo", type=["jpg", "jpeg", "png"])
 
-uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG)", type=["jpg", "jpeg"])
+if uploaded:
+    image = Image.open(uploaded).convert("RGB")
 
-if uploaded_file:
-    try:
-        img_bytes = uploaded_file.read()
-        orig = Image.open(io.BytesIO(img_bytes))
-        if orig.mode != "RGB":
-            orig = orig.convert("RGB")
+    with st.spinner("Processing photo..."):
+        cleaned = remove_background_smooth(image)
+        cleaned = cleaned.resize((FINAL_PX, FINAL_PX))
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("📤 Original Photo")
-            st.image(orig, use_column_width=True)
+        # Detect face for guideline placement
+        image_rgb = np.array(cleaned)
+        image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+        face_box = detect_face(image_bgr)
 
-        with col2:
-            st.subheader("✅ Processed (DV Compliant)")
-            orig_large = orig.resize((orig.width * 2, orig.height * 2), Image.LANCZOS)
-            bg_removed = remove_background_smooth(orig_large)
-            processed, face_box = crop_and_resize(bg_removed)
+        final_preview = draw_guidelines(cleaned.copy(), face_box=face_box)
 
-            # 🔘 Toggle guidelines
-            show_guidelines = st.toggle("Show DV Guidelines", value=True)
+    st.image(final_preview, caption="DV Photo with Guidelines", use_container_width=True)
 
-            if show_guidelines:
-                final_preview = draw_guidelines(processed.copy())
-                st.image(final_preview, caption="DV Compliance Preview", use_column_width=True)
-            else:
-                st.image(processed, caption="Clean Photo (No Guidelines)", use_column_width=True)
-
-            # Head size check
-            message = check_head_ratio(face_box, FINAL_PX)
-            st.markdown(f"**{message}**")
-
-            # Download
-            buf = io.BytesIO()
-            processed.save(buf, format="JPEG", quality=95)
-            buf.seek(0)
-            st.download_button(
-                "⬇️ Download DV-Ready Photo (600x600)",
-                data=buf,
-                file_name="dvlottery_photo.jpg",
-                mime="image/jpeg"
-            )
-
-    except Exception as e:
-        st.error(f"❌ Could not process image: {e}")
+    # Download option
+    buf = io.BytesIO()
+    final_preview.save(buf, format="JPEG")
+    byte_im = buf.getvalue()
+    st.download_button("⬇️ Download Final DV Photo", data=byte_im, file_name="dv_photo_guideline.jpg", mime="image/jpeg")
