@@ -3,73 +3,84 @@ from PIL import Image
 import cv2
 import numpy as np
 import io
+import os
 
-# You may need: pip install face_recognition opencv-python-headless rembg
-import face_recognition
-from rembg import remove  # background removal library
+# Ensure the cascade file is present
+CASCADE_PATH = "haarcascade_frontalface_default.xml"
+if not os.path.isfile(CASCADE_PATH):
+    st.error(f"Missing cascade file: {CASCADE_PATH}. Please add it to your repo.")
+    st.stop()
 
-def process_image(image: Image.Image) -> Image.Image:
-    """Takes PIL image, replaces background white, crops/resizes for DV Lottery compliance."""
-    # Convert to RGB
+face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+
+def replace_background_white(np_img):
+    """Convert image to RGB, then replace background with white by thresholding."""
+    # Convert to RGB if needed
+    rgb = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
+    # Here we assume background is light and subject darker — simple thresholding
+    gray = cv2.cvtColor(np_img, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+    mask = cv2.medianBlur(mask, 5)
+    mask_inv = cv2.bitwise_not(mask)
+    white_bg = np.full(np_img.shape, 255, dtype=np.uint8)
+    fg = cv2.bitwise_and(np_img, np_img, mask=mask)
+    bg = cv2.bitwise_and(white_bg, white_bg, mask=mask_inv)
+    combined = cv2.add(fg, bg)
+    return combined
+
+def auto_crop_square(image: Image.Image, min_head_ratio=0.50, max_head_ratio=0.69, final_size=600) -> Image.Image:
+    """Automatic crop to square around detected face and ensure head size ratio roughly."""
     image = image.convert("RGB")
     np_img = np.array(image)
-    # 1. Background removal
-    # Using rembg: returns RGBA (with alpha mask)
-    result = remove(np_img)
-    # Convert RGBA back to RGB with white background
-    bgr = cv2.cvtColor(result[:, :, :3], cv2.COLOR_RGB2BGR)
-    alpha = result[:, :, 3] / 255.0
-    white_bg = np.ones_like(bgr, dtype=np.uint8) * 255
-    # Composite
-    comp = (bgr * alpha[:, :, None] + white_bg * (1 - alpha[:, :, None])).astype(np.uint8)
-    rgb = cv2.cvtColor(comp, cv2.COLOR_BGR2RGB)
-    # 2. Face detection & cropping
-    face_locations = face_recognition.face_locations(rgb)
-    if not face_locations:
-        raise Exception("No face detected — please upload a clear frontal photo.")
-    # We'll use the largest face
-    top, right, bottom, left = max(face_locations, key=lambda loc: (loc[2]-loc[0])*(loc[1]-loc[3]))
-    # Expand to include hair & shoulders
-    height, width = rgb.shape[:2]
-    # approximate expansions – you can tweak
-    top_exp = max(int(top - 0.3*(bottom-top)), 0)
-    bottom_exp = min(int(bottom + 0.2*(bottom-top)), height)
-    left_exp = max(int(left - 0.2*(right-left)), 0)
-    right_exp = min(int(right + 0.2*(right-left)), width)
-    crop = rgb[top_exp:bottom_exp, left_exp:right_exp]
-    # 3. Resize to square and ensure head height ratio
-    crop_h, crop_w = crop.shape[:2]
-    # Determine desired size
-    final_size = 600
-    # Resize preserving aspect ratio
-    if crop_h > crop_w:
-        new_w = int(crop_w * final_size / crop_h)
-        resized = cv2.resize(crop, (new_w, final_size))
-        pad = (final_size - new_w) // 2
-        squared = cv2.copyMakeBorder(resized, 0, 0, pad, final_size-new_w-pad,
-                                     cv2.BORDER_CONSTANT, value=[255,255,255])
+    # convert from PIL (RGB) to OpenCV BGR
+    bgr = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
+
+    # Replace background with white
+    processed = replace_background_white(bgr)
+
+    gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100,100))
+    if len(faces) == 0:
+        raise Exception("No face detected. Please upload a clear, frontal photo.")
+    # choose largest face
+    x, y, w, h = max(faces, key=lambda f: f[2]*f[3])
+
+    height, width = processed.shape[:2]
+    # Expand bounding box somewhat (to include hair/shoulders)
+    top = max(0, y - int(0.3*h))
+    bottom = min(height, y + h + int(0.3*h))
+    left = max(0, x - int(0.2*w))
+    right = min(width, x + w + int(0.2*w))
+
+    crop_img = processed[top:bottom, left:right]
+
+    # Now we crop to square: find largest dimension
+    c_h, c_w = crop_img.shape[:2]
+    if c_h > c_w:
+        # tall: pad width
+        padded = cv2.copyMakeBorder(crop_img, 0, 0, (c_h-c_w)//2, (c_h-c_w)-(c_h-c_w)//2, cv2.BORDER_CONSTANT, value=[255,255,255])
     else:
-        new_h = int(crop_h * final_size / crop_w)
-        resized = cv2.resize(crop, (final_size, new_h))
-        pad = (final_size - new_h) // 2
-        squared = cv2.copyMakeBorder(resized, pad, final_size-new_h-pad, 0, 0,
-                                     cv2.BORDER_CONSTANT, value=[255,255,255])
-    # 4. Convert to PIL Image and return
-    final_img = Image.fromarray(squared)
-    return final_img
+        # wide or equal: pad height
+        padded = cv2.copyMakeBorder(crop_img, (c_w-c_h)//2, (c_w-c_h)-(c_w-c_h)//2, 0, 0, cv2.BORDER_CONSTANT, value=[255,255,255])
+
+    # Resize to final_size x final_size
+    resized = cv2.resize(padded, (final_size, final_size), interpolation=cv2.INTER_AREA)
+
+    # Convert back to PIL
+    final_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(final_rgb)
 
 # Streamlit UI
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Auto-Crop & White Background")
+st.title("DV Lottery Photo Editor — Auto Crop & White Background")
 
-uploaded_file = st.file_uploader("Upload your photo (jpg or jpeg)", type=["jpg","jpeg"])
+uploaded_file = st.file_uploader("Upload your photo (jpg/jpeg)", type=["jpg","jpeg"])
 if uploaded_file:
     image = Image.open(uploaded_file)
     st.image(image, caption="Original Image", use_column_width=True)
     try:
-        processed = process_image(image)
-        st.image(processed, caption="Processed Image — ready for DV Lottery", use_column_width=True)
-        # Provide download
+        processed = auto_crop_square(image)
+        st.image(processed, caption="Processed Image (Ready for DV Lottery)", use_column_width=True)
         buf = io.BytesIO()
         processed.save(buf, format="JPEG", quality=95)
         buf.seek(0)
