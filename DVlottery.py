@@ -18,6 +18,7 @@ HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
 EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 
 mp_face_mesh = mp.solutions.face_mesh
+mp_face_detection = mp.solutions.face_detection
 
 # ---------------------- HELPERS ----------------------
 def get_face_landmarks(cv_img):
@@ -35,17 +36,30 @@ def get_face_landmarks(cv_img):
 
 def get_head_eye_positions(landmarks, img_h, img_w):
     try:
-        # Get head top (forehead) and chin positions
-        top_y = int(landmarks.landmark[10].y * img_h)  # Forehead
-        chin_y = int(landmarks.landmark[152].y * img_h)  # Chin
+        # Get more reliable landmarks for head top and chin
+        # Forehead/head top - using multiple points for better accuracy
+        forehead_points = [10, 67, 69, 104, 108, 151, 337, 338]
+        forehead_y = min([landmarks.landmark[i].y for i in forehead_points])
+        
+        # Chin - using multiple chin points
+        chin_points = [152, 175, 176, 148, 149, 150, 136, 172, 58, 132]
+        chin_y = max([landmarks.landmark[i].y for i in chin_points])
         
         # Get eye positions
-        left_eye_y = int(landmarks.landmark[33].y * img_h)
-        right_eye_y = int(landmarks.landmark[263].y * img_h)
-        eye_y = (left_eye_y + right_eye_y) // 2
+        left_eye_points = [33, 7, 163, 144, 145, 153, 154, 155]
+        right_eye_points = [263, 249, 390, 373, 374, 380, 381, 382]
         
-        # Add buffer for hair/head top
-        hair_buffer = int((chin_y - top_y) * 0.25)
+        left_eye_y = np.mean([landmarks.landmark[i].y for i in left_eye_points])
+        right_eye_y = np.mean([landmarks.landmark[i].y for i in right_eye_points])
+        eye_y = (left_eye_y + right_eye_y) / 2
+        
+        # Convert to pixel coordinates
+        top_y = int(forehead_y * img_h)
+        chin_y = int(chin_y * img_h)
+        eye_y = int(eye_y * img_h)
+        
+        # Add buffer for hair/head top (reduced buffer for more accuracy)
+        hair_buffer = int((chin_y - top_y) * 0.15)  # Reduced from 0.25 to 0.15
         top_y = max(0, top_y - hair_buffer)
         
         return top_y, chin_y, eye_y
@@ -130,7 +144,18 @@ def process_dv_photo(img_pil):
         return result, head_info
     except Exception as e:
         st.error(f"Photo processing error: {str(e)}")
-        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE}
+        # Fallback: return original image with default positions
+        orig_resized = img_pil.resize((MIN_SIZE, MIN_SIZE), Image.LANCZOS)
+        default_top = MIN_SIZE // 4
+        default_chin = MIN_SIZE * 3 // 4
+        default_eye = MIN_SIZE // 2
+        return orig_resized, {
+            "top_y": default_top, 
+            "chin_y": default_chin, 
+            "eye_y": default_eye, 
+            "head_height": default_chin - default_top, 
+            "canvas_size": MIN_SIZE
+        }
 
 # ---------------------- DRAW LINES ----------------------
 def draw_guidelines(img, head_info):
@@ -141,12 +166,18 @@ def draw_guidelines(img, head_info):
         top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
         head_height, canvas_size = head_info["head_height"], head_info["canvas_size"]
 
-        head_ratio = head_height / canvas_size
-        eye_ratio = (canvas_size - eye_y) / canvas_size
+        # Calculate ratios
+        head_ratio = head_height / canvas_size if canvas_size > 0 else 0
+        eye_ratio = (canvas_size - eye_y) / canvas_size if canvas_size > 0 else 0
 
         # Define colors based on compliance
         head_color = "green" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "red"
         eye_color = "green" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "red"
+
+        # Ensure positions are within image bounds
+        top_y = max(0, min(top_y, h-1))
+        chin_y = max(0, min(chin_y, h-1))
+        eye_y = max(0, min(eye_y, h-1))
 
         # Draw head top line (short horizontal line)
         draw.line([(cx-50, top_y), (cx+50, top_y)], fill="blue", width=3)
@@ -290,24 +321,23 @@ if uploaded_file:
         
         with col1:
             head_status = "✅ PASS" if head_compliant else "❌ FAIL"
-            # Use simpler metric without delta to avoid errors
             st.metric(
                 label="Head Height", 
-                value=f"{int(head_ratio*100)}%",
-                delta=None
+                value=f"{int(head_ratio*100)}%"
             )
             st.write(head_status)
             st.progress(min(max(head_ratio / HEAD_MAX_RATIO, 0), 1.0))
+            st.caption(f"Required: {int(HEAD_MIN_RATIO*100)}-{int(HEAD_MAX_RATIO*100)}%")
             
         with col2:
             eye_status = "✅ PASS" if eye_compliant else "❌ FAIL"
             st.metric(
                 label="Eye Position", 
-                value=f"{int(eye_ratio*100)}%",
-                delta=None
+                value=f"{int(eye_ratio*100)}%"
             )
             st.write(eye_status)
             st.progress(min(max(eye_ratio / EYE_MAX_RATIO, 0), 1.0))
+            st.caption(f"Required: {int(EYE_MIN_RATIO*100)}-{int(EYE_MAX_RATIO*100)}%")
             
         with col3:
             overall_status = "✅ COMPLIANT" if not needs_fix else "❌ NEEDS FIXING"
@@ -326,15 +356,21 @@ if uploaded_file:
             with fix_col1:
                 issues = []
                 if not head_compliant:
-                    issues.append("Head height out of range")
+                    if head_ratio < HEAD_MIN_RATIO:
+                        issues.append("Head height too small")
+                    else:
+                        issues.append("Head height too large")
                 if not eye_compliant:
-                    issues.append("Eye position out of range")
+                    if eye_ratio < EYE_MIN_RATIO:
+                        issues.append("Eyes too high")
+                    else:
+                        issues.append("Eyes too low")
                 
                 st.warning(f"""
                 **Issues Detected:**
-                - {' | '.join(issues)}
-                - Click the button below to attempt automatic correction
-                - Multiple attempts may be needed for optimal results
+                {''.join([f'- {issue}\\n' for issue in issues])}
+                Click the button below to attempt automatic correction.
+                Multiple attempts may be needed for optimal results.
                 """)
                 
             with fix_col2:
@@ -344,7 +380,8 @@ if uploaded_file:
                         del st.session_state.processed_data
                     st.rerun()
             
-            st.info("💡 **Tip:** If auto-fix doesn't work after several attempts, try uploading a different photo with better lighting and clear facial features.")
+            st.info("💡 **Tip:** For best results, use a photo with:")
+            st.info("- Clear front-facing view\n- Good lighting\n- Plain background\n- Neutral expression")
 
         # Download Section
         st.subheader("📥 Download Corrected Photo")
@@ -377,44 +414,13 @@ if uploaded_file:
                 help="Download the corrected photo with measurement guidelines for verification"
             )
 
-        # Detailed Requirements Section
-        with st.expander("📋 Detailed DV Lottery Photo Requirements"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("""
-                **📐 Technical Specifications:**
-                - **Photo Size:** 600×600 pixels
-                - **File Format:** JPEG recommended
-                - **Color:** Color only (no black & white)
-                - **Resolution:** High quality, no compression artifacts
-                
-                **👤 Pose & Composition:**
-                - **Facing:** Directly facing camera
-                - **Expression:** Neutral, both eyes open
-                - **Background:** Plain white or off-white
-                - **Lighting:** Even, no shadows
-                - **Headwear:** None (religious exceptions)
-                - **Glasses:** None if possible (no glare)
-                """)
-                
-            with col2:
-                st.markdown("""
-                **📏 Measurement Requirements:**
-                - **Head Height:** 50% - 69% of photo height
-                - **Eye Position:** 56% - 69% from top of photo
-                - **Centering:** Head centered in frame
-                
-                **❌ Common Rejection Reasons:**
-                - Wrong head size
-                - Incorrect eye position  
-                - Poor lighting/shadow
-                - Inappropriate background
-                - Wrong photo dimensions
-                - Blurry or low quality
-                """)
-            
-            st.success("**✅ This tool automatically ensures your photo meets the head height and eye position requirements!**")
+        # Debug information (collapsed by default)
+        with st.expander("🔍 Debug Information"):
+            st.write("Head Info:", head_info)
+            st.write("Head Ratio:", head_ratio)
+            st.write("Eye Ratio:", eye_ratio)
+            st.write("Head Compliant:", head_compliant)
+            st.write("Eye Compliant:", eye_compliant)
 
 else:
     # Welcome screen when no file uploaded
@@ -438,22 +444,6 @@ else:
     
     **👆 Upload your photo above to get started!**
     """)
-    
-    # Example preview
-    st.subheader("📋 Example of Compliant Photo")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("**✅ Correct Head Size**")
-        st.info("Head: 50-69% of photo")
-        
-    with col2:
-        st.markdown("**✅ Correct Eye Position**")
-        st.info("Eyes: 56-69% from top")
-        
-    with col3:
-        st.markdown("**✅ Proper Composition**")
-        st.info("Centered, clear, well-lit")
 
     # Clear session state when no file is uploaded
     if 'processed_data' in st.session_state:
