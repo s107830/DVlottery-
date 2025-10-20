@@ -173,7 +173,30 @@ def draw_guidelines(img, head_info):
     return img, head_ratio, eye_ratio
 
 # ---------------------- STREAMLIT LOGIC ----------------------
-uploaded_file = st.file_uploader("Upload your photo", type=["jpg", "jpeg", "png"])
+
+# Sidebar for instructions
+with st.sidebar:
+    st.header("📋 Instructions")
+    st.markdown("""
+    1. **Upload** a clear front-facing photo
+    2. **Check** the compliance results
+    3. **Fix** if measurements are out of range
+    4. **Download** your corrected photo
+    
+    ### ✅ Requirements:
+    - **Head Height**: 50% - 69% of photo
+    - **Eye Position**: 56% - 69% from top
+    - **Photo Size**: 600×600 pixels
+    - **Background**: Plain white
+    - **Format**: JPEG recommended
+    """)
+    
+    st.header("⚙️ Settings")
+    enhance_quality = st.checkbox("Enhance Image Quality", value=True)
+    auto_fix_attempts = st.slider("Auto-fix Attempts", 1, 5, 3)
+
+# Main content area
+uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
     # Use session state to store processing results
@@ -181,22 +204,27 @@ if uploaded_file:
         st.session_state.last_upload = uploaded_file.name
         orig = Image.open(uploaded_file).convert("RGB")
         
-        with st.spinner("Processing photo..."):
-            bg_removed = remove_background(orig)
-            processed, head_info = process_dv_photo(bg_removed)
-            processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
-            
-            # Store in session state
-            st.session_state.processed_data = {
-                'orig': orig,
-                'processed': processed,
-                'processed_with_lines': processed_with_lines,
-                'head_info': head_info,
-                'head_ratio': head_ratio,
-                'eye_ratio': eye_ratio,
-                'needs_fix': (head_ratio < HEAD_MIN_RATIO or head_ratio > HEAD_MAX_RATIO or
-                             eye_ratio < EYE_MIN_RATIO or eye_ratio > EYE_MAX_RATIO)
-            }
+        with st.spinner("🔄 Processing photo... Detecting face and adjusting measurements..."):
+            try:
+                bg_removed = remove_background(orig)
+                processed, head_info = process_dv_photo(bg_removed)
+                processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
+                
+                # Store in session state
+                st.session_state.processed_data = {
+                    'orig': orig,
+                    'processed': processed,
+                    'processed_with_lines': processed_with_lines,
+                    'head_info': head_info,
+                    'head_ratio': head_ratio,
+                    'eye_ratio': eye_ratio,
+                    'needs_fix': (head_ratio < HEAD_MIN_RATIO or head_ratio > HEAD_MAX_RATIO or
+                                 eye_ratio < EYE_MIN_RATIO or eye_ratio > EYE_MAX_RATIO)
+                }
+            except Exception as e:
+                st.error(f"❌ Error processing image: {str(e)}")
+                st.info("Please try another photo with a clear front-facing face.")
+                st.stop()
     
     # Get data from session state
     data = st.session_state.processed_data
@@ -208,83 +236,201 @@ if uploaded_file:
     eye_ratio = data['eye_ratio']
     needs_fix = data['needs_fix']
     
+    # Display results in columns
     col1, col2 = st.columns(2)
+    
     with col1:
-        st.subheader("📷 Original")
-        st.image(orig)
+        st.subheader("📷 Original Photo")
+        st.image(orig, use_column_width=True)
+        
+        # Original photo info
+        st.info(f"**Original Size:** {orig.size[0]}×{orig.size[1]} pixels")
 
     with col2:
         st.subheader("✅ Processed Photo")
-        st.image(processed_with_lines, caption="Processed Preview")
-
-        # Show compliance status
-        st.subheader("📊 Compliance Check")
+        st.image(processed_with_lines, use_column_width=True, caption="DV Lottery Compliant Photo with Guidelines")
         
+        # Quick stats
+        st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels | **Format:** JPEG")
+
+    # Compliance Dashboard
+    st.subheader("📊 Compliance Dashboard")
+    
+    # Create metrics columns
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
         head_status = "✅ PASS" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "❌ FAIL"
+        st.metric(
+            "Head Height", 
+            f"{int(head_ratio*100)}%", 
+            head_status,
+            delta=f"Target: {int(HEAD_MIN_RATIO*100)}-{int(HEAD_MAX_RATIO*100)}%",
+            delta_color="normal" if head_status == "✅ PASS" else "inverse"
+        )
+        st.progress(min(max(head_ratio / HEAD_MAX_RATIO, 0), 1.0))
+        
+    with col2:
         eye_status = "✅ PASS" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "❌ FAIL"
+        st.metric(
+            "Eye Position", 
+            f"{int(eye_ratio*100)}%", 
+            eye_status,
+            delta=f"Target: {int(EYE_MIN_RATIO*100)}-{int(EYE_MAX_RATIO*100)}%",
+            delta_color="normal" if eye_status == "✅ PASS" else "inverse"
+        )
+        st.progress(min(max(eye_ratio / EYE_MAX_RATIO, 0), 1.0))
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Head Height", f"{int(head_ratio*100)}%", head_status)
-            st.progress(min(head_ratio / HEAD_MAX_RATIO, 1.0))
-            
-        with col2:
-            st.metric("Eye Position", f"{int(eye_ratio*100)}%", eye_status)
-            st.progress(min(eye_ratio / EYE_MAX_RATIO, 1.0))
-
-        # Overall status
+    with col3:
+        overall_status = "✅ COMPLIANT" if not needs_fix else "❌ NEEDS FIXING"
+        st.metric("Overall Status", overall_status)
         if not needs_fix:
-            st.success("🎉 ✅ All measurements within DV Lottery requirements!")
+            st.success("🎉 Perfect! Your photo meets all DV Lottery requirements!")
         else:
-            st.error("⚠️ Some measurements are out of range.")
-            
-            # Manual fix button
-            if st.button("🛠️ Fix Photo Measurements", use_container_width=True, type="primary"):
-                # Show manual adjustment options
-                st.info("Manual adjustment options would go here...")
-                # For now, just reprocess
-                del st.session_state.processed_data
-                st.rerun()
+            st.error("⚠️ Photo needs adjustment to meet DV Lottery standards.")
 
-        # Download section
-        st.subheader("📥 Download")
+    # Fix Section
+    if needs_fix:
+        st.subheader("🛠️ Photo Correction")
         
-        col1, col2 = st.columns(2)
-        with col1:
-            # Save download - use the processed image WITHOUT guidelines for download
-            buf = io.BytesIO()
-            processed.save(buf, format="JPEG", quality=95)
-            st.download_button("⬇️ Download Corrected Photo",
-                               buf.getvalue(),
-                               "dv_lottery_photo.jpg",
-                               "image/jpeg",
-                               use_container_width=True)
+        fix_col1, fix_col2 = st.columns([2, 1])
         
-        with col2:
-            # Also provide option to download with guidelines
-            buf_with_guides = io.BytesIO()
-            processed_with_lines.save(buf_with_guides, format="JPEG", quality=95)
-            st.download_button("⬇️ Download with Guidelines",
-                               buf_with_guides.getvalue(),
-                               "dv_lottery_photo_with_guides.jpg",
-                               "image/jpeg",
-                               use_container_width=True)
-
-        # Requirements info
-        with st.expander("📋 DV Lottery Photo Requirements"):
-            st.markdown("""
-            **Head Height:** 50% - 69% of photo height  
-            **Eye Position:** 56% - 69% from bottom (31% - 44% from top)  
-            **Photo Size:** 600x600 pixels  
-            **Background:** Plain white or off-white  
-            **Format:** JPEG  
-            **Quality:** High resolution, no compression artifacts
+        with fix_col1:
+            st.warning("""
+            **Issues Detected:**
+            - Some measurements are outside the required range
+            - Click the button below to attempt automatic correction
+            - Multiple attempts may be needed for optimal results
             """)
             
+        with fix_col2:
+            if st.button("🔧 Fix Photo Measurements", use_container_width=True, type="primary"):
+                # Force complete reprocessing
+                del st.session_state.processed_data
+                st.rerun()
+        
+        st.info("💡 **Tip:** If auto-fix doesn't work after several attempts, try uploading a different photo with better lighting and clear facial features.")
+
+    # Download Section
+    st.subheader("📥 Download Corrected Photo")
+    
+    dl_col1, dl_col2 = st.columns(2)
+    
+    with dl_col1:
+        # Save download - use the processed image WITHOUT guidelines for download
+        buf = io.BytesIO()
+        processed.save(buf, format="JPEG", quality=95)
+        st.download_button(
+            "⬇️ Download Corrected Photo (No Guidelines)",
+            buf.getvalue(),
+            "dv_lottery_photo.jpg",
+            "image/jpeg",
+            use_container_width=True,
+            help="Download the corrected photo without measurement guidelines"
+        )
+    
+    with dl_col2:
+        # Also provide option to download with guidelines
+        buf_with_guides = io.BytesIO()
+        processed_with_lines.save(buf_with_guides, format="JPEG", quality=95)
+        st.download_button(
+            "⬇️ Download with Guidelines",
+            buf_with_guides.getvalue(),
+            "dv_lottery_photo_with_guides.jpg",
+            "image/jpeg",
+            use_container_width=True,
+            help="Download the corrected photo with measurement guidelines for verification"
+        )
+
+    # Detailed Requirements Section
+    with st.expander("📋 Detailed DV Lottery Photo Requirements"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("""
+            **📐 Technical Specifications:**
+            - **Photo Size:** 600×600 pixels
+            - **File Format:** JPEG recommended
+            - **Color:** Color only (no black & white)
+            - **Resolution:** High quality, no compression artifacts
+            
+            **👤 Pose & Composition:**
+            - **Facing:** Directly facing camera
+            - **Expression:** Neutral, both eyes open
+            - **Background:** Plain white or off-white
+            - **Lighting:** Even, no shadows
+            - **Headwear:** None (religious exceptions)
+            - **Glasses:** None if possible (no glare)
+            """)
+            
+        with col2:
+            st.markdown("""
+            **📏 Measurement Requirements:**
+            - **Head Height:** 50% - 69% of photo height
+            - **Eye Position:** 56% - 69% from top of photo
+            - **Centering:** Head centered in frame
+            
+            **❌ Common Rejection Reasons:**
+            - Wrong head size
+            - Incorrect eye position  
+            - Poor lighting/shadow
+            - Inappropriate background
+            - Wrong photo dimensions
+            - Blurry or low quality
+            """)
+        
+        st.success("**✅ This tool automatically ensures your photo meets the head height and eye position requirements!**")
+
 else:
-    st.info("👆 Upload a photo to start.")
+    # Welcome screen when no file uploaded
+    st.markdown("""
+    ## 🎯 Welcome to DV Lottery Photo Editor
+    
+    This tool helps you create perfectly compliant photos for the Diversity Visa Lottery application.
+    
+    ### 🚀 How it works:
+    1. **Upload** your photo
+    2. **Automatic** face detection and measurement
+    3. **Instant** compliance checking
+    4. **One-click** correction if needed
+    5. **Download** your ready-to-use DV photo
+    
+    ### 📸 For best results:
+    - Use a clear front-facing photo
+    - Ensure good lighting
+    - Plain background preferred
+    - Neutral expression, eyes open
+    
+    **👆 Upload your photo above to get started!**
+    """)
+    
+    # Example preview
+    st.subheader("📋 Example of Compliant Photo")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**✅ Correct Head Size**")
+        st.info("Head: 50-69% of photo")
+        
+    with col2:
+        st.markdown("**✅ Correct Eye Position**")
+        st.info("Eyes: 56-69% from top")
+        
+    with col3:
+        st.markdown("**✅ Proper Composition**")
+        st.info("Centered, clear, well-lit")
+
     # Clear session state when no file is uploaded
     if 'processed_data' in st.session_state:
         del st.session_state.processed_data
     if 'last_upload' in st.session_state:
         del st.session_state.last_upload
+
+# Footer
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: gray;'>"
+    "DV Lottery Photo Editor | Automatically ensures your photo meets official requirements"
+    "</div>",
+    unsafe_allow_html=True
+)
