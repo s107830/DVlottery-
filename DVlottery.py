@@ -60,7 +60,7 @@ def get_face_bounding_box(cv_img):
         width = int(bbox.width * w)
         height = int(bbox.height * h)
         
-        landmarks.landmark[10] = type('obj', (object,), {'y': y/h})()
+        landmarks.landmark[10] = type('obj', (object,), {'y': (y - height * 0.1)/h})()  # Higher top for hair
         landmarks.landmark[152] = type('obj', (object,), {'y': (y + height)/h})()
         eye_y = y + height * 0.3
         landmarks.landmark[33] = type('obj', (object,), {'y': eye_y/h})()
@@ -82,11 +82,16 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         right_eye_y = int(landmarks.landmark[right_eye_idx].y * img_h)
         eye_y = (left_eye_y + right_eye_y) // 2
 
+        # Adjust top higher to include hair
+        top_y = max(0, top_y - int((chin_y - top_y) * 0.15))
+
         return top_y, chin_y, eye_y
     except:
         top_y = int(landmarks.landmark[10].y * img_h)
         chin_y = int(landmarks.landmark[152].y * img_h)
         eye_y = int((top_y + chin_y) * 0.4)
+        # Adjust for hair
+        top_y = max(0, top_y - int((chin_y - top_y) * 0.15))
         return top_y, chin_y, eye_y
 
 # ---------------------- BACKGROUND REMOVAL ----------------------
@@ -105,7 +110,7 @@ def remove_background(img_pil):
         st.warning(f"Background removal failed: {e}. Using original image.")
         return img_pil
 
-# ---------------------- FIXED AUTO ADJUST FUNCTION ----------------------
+# ---------------------- IMPROVED AUTO ADJUST FUNCTION ----------------------
 def auto_adjust_dv_photo(image_pil):
     try:
         # Convert PIL to OpenCV
@@ -128,7 +133,9 @@ def auto_adjust_dv_photo(image_pil):
         # Calculate scale factor to achieve ideal head height
         scale_factor = target_head_height / head_height
         
-        # Apply scaling
+        # Apply scaling with limits
+        scale_factor = max(0.3, min(3.0, scale_factor))  # Wider limits for better adjustment
+        
         new_h = int(original_h * scale_factor)
         new_w = int(original_w * scale_factor)
         
@@ -145,24 +152,22 @@ def auto_adjust_dv_photo(image_pil):
         canvas_size = MIN_SIZE  # Use 600px as standard DV size
         canvas = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
 
-        # Calculate target positions
-        # Head should be centered vertically with proper eye position
-        target_eye_from_bottom = int(canvas_size * ((EYE_MIN_RATIO + EYE_MAX_RATIO) / 2))
-        target_eye_y = canvas_size - target_eye_from_bottom
+        # Calculate target eye position (middle of eye range)
+        target_eye_ratio = (EYE_MIN_RATIO + EYE_MAX_RATIO) / 2  # 62.5%
+        target_eye_y = canvas_size - int(canvas_size * target_eye_ratio)
         
         # Calculate vertical offset to position eyes correctly
         y_offset = target_eye_y - eye_y_scaled
         
-        # Calculate horizontal offset to center the face
+        # Ensure we don't crop the top (hair) or bottom (chin)
+        min_y_offset = -top_y_scaled  # Don't crop top
+        max_y_offset = canvas_size - chin_y_scaled  # Don't crop bottom
+        
+        # Clamp the y_offset to keep entire head in frame
+        y_offset = max(min_y_offset, min(y_offset, max_y_offset))
+        
+        # Center horizontally
         x_offset = (canvas_size - new_w) // 2
-
-        # Ensure the entire head fits within canvas
-        if y_offset + top_y_scaled < 0:
-            # Head would be cropped at top, adjust downward
-            y_offset = -top_y_scaled
-        elif y_offset + chin_y_scaled > canvas_size:
-            # Head would be cropped at bottom, adjust upward
-            y_offset = canvas_size - chin_y_scaled
 
         # Paste the resized image onto canvas
         y_start = max(0, y_offset)
@@ -185,11 +190,11 @@ def auto_adjust_dv_photo(image_pil):
         
     except Exception as e:
         st.error(f"Auto-adjust failed: {e}")
-        # Fallback: simple resize to square
-        size = max(image_pil.size)
+        # Fallback: simple resize to square with white background
+        size = max(MIN_SIZE, max(image_pil.size))
         square_img = Image.new("RGB", (size, size), (255, 255, 255))
-        square_img.paste(image_pil, ((size - image_pil.width) // 2, 
-                                   (size - image_pil.height) // 2))
+        offset = ((size - image_pil.width) // 2, (size - image_pil.height) // 2)
+        square_img.paste(image_pil, offset)
         return square_img
 
 # ---------------------- GUIDELINES ----------------------
@@ -198,15 +203,15 @@ def draw_guidelines(img):
     w, h = img.size
 
     # Head height boundaries (50-69% of TOTAL image height)
-    head_min_pixels = int(h * HEAD_MIN_RATIO)  # 50% of total height
-    head_max_pixels = int(h * HEAD_MAX_RATIO)  # 69% of total height
+    head_min_pixels = int(h * HEAD_MIN_RATIO)
+    head_max_pixels = int(h * HEAD_MAX_RATIO)
     
     # Eye line boundaries (56-69% from BOTTOM)
-    eye_min_from_bottom = int(h * EYE_MIN_RATIO)  # 56% from bottom
-    eye_max_from_bottom = int(h * EYE_MAX_RATIO)  # 69% from bottom
+    eye_min_from_bottom = int(h * EYE_MIN_RATIO)
+    eye_max_from_bottom = int(h * EYE_MAX_RATIO)
     
-    eye_min_y = h - eye_min_from_bottom  # Convert to y-coordinate from top
-    eye_max_y = h - eye_max_from_bottom  # Convert to y-coordinate from top
+    eye_min_y = h - eye_min_from_bottom
+    eye_max_y = h - eye_max_from_bottom
 
     # Draw bounding box
     draw.rectangle([(0, 0), (w-1, h-1)], outline="red", width=2)
@@ -214,7 +219,7 @@ def draw_guidelines(img):
     # Draw head height bracket on the right
     bracket_x = w - 40
     
-    # Head height bracket shows the required head size (50-69% of image height)
+    # Head height bracket position
     head_bracket_top = (h - head_max_pixels) // 2
     head_bracket_bottom = head_bracket_top + head_max_pixels
     
@@ -222,7 +227,7 @@ def draw_guidelines(img):
     draw.line([(bracket_x, head_bracket_top), (bracket_x, head_bracket_bottom)], 
               fill="blue", width=3)
     
-    # Draw horizontal ticks for head height
+    # Draw horizontal ticks
     draw.line([(bracket_x-10, head_bracket_top), (bracket_x+10, head_bracket_top)], 
               fill="blue", width=2)
     draw.line([(bracket_x-10, head_bracket_bottom), (bracket_x+10, head_bracket_bottom)], 
@@ -236,20 +241,20 @@ def draw_guidelines(img):
     # Add head height labels
     draw.text((bracket_x+12, head_bracket_top - 15), "69%", fill="blue")
     draw.text((bracket_x+12, fifty_percent_y - 15), "50%", fill="blue")
-    draw.text((bracket_x-80, head_bracket_top + (head_bracket_bottom-head_bracket_top)//2 - 20), 
+    draw.text((bracket_x-100, head_bracket_top + (head_bracket_bottom-head_bracket_top)//2 - 10), 
               "HEAD HEIGHT", fill="blue")
-    draw.text((bracket_x-80, head_bracket_top + (head_bracket_bottom-head_bracket_top)//2), 
+    draw.text((bracket_x-80, head_bracket_top + (head_bracket_bottom-head_bracket_top)//2 + 10), 
               "50-69%", fill="blue")
     
-    # Draw eye line area (56-69% from bottom)
+    # Draw eye line area
     draw.rectangle([(0, eye_max_y), (w, eye_min_y)], outline="green", width=2)
     draw.line([(0, (eye_min_y + eye_max_y)//2), (w, (eye_min_y + eye_max_y)//2)], 
               fill="green", width=2)
     
     # Add eye line labels
-    draw.text((10, eye_min_y - 15), "EYE LINE 56%", fill="green")
+    draw.text((10, eye_min_y - 25), "EYE LINE 56%", fill="green")
     draw.text((10, eye_max_y + 5), "EYE LINE 69%", fill="green")
-    draw.text((w//2 - 40, (eye_min_y + eye_max_y)//2 - 15), "EYES MUST BE HERE", fill="green")
+    draw.text((w//2 - 50, (eye_min_y + eye_max_y)//2 - 10), "EYES MUST BE HERE", fill="green")
     
     return img
 
@@ -278,8 +283,7 @@ if uploaded_file:
             final_preview = draw_guidelines(processed.copy())
             st.image(final_preview, caption=f"DV Compliance Preview: {processed.size}")
             
-            # Show compliance status
-            st.success("**✅ Photo has been automatically adjusted to meet DV Lottery requirements**")
+            st.success("**✅ Photo automatically adjusted to meet DV Lottery requirements**")
             
             # Download button
             buf = io.BytesIO()
@@ -298,5 +302,5 @@ if uploaded_file:
         st.info("💡 **Tips for better results:**")
         st.write("- Use front-facing photo with clear lighting")
         st.write("- Look directly at camera with neutral expression")
-        st.write("- Remove glasses, hats, or head coverings")
+        st.write("- Ensure your hair is visible in the photo")
         st.write("- Use plain background for better auto-removal")
