@@ -304,7 +304,7 @@ def remove_background_basic(img_pil):
 def remove_background(img_pil):
     return remove_background_advanced(img_pil)
 
-# ---------------------- AUTO ADJUST ----------------------
+# ---------------------- AUTO ADJUST WITH HEAD DETECTION ----------------------
 def auto_adjust_dv_photo(image_pil):
     try:
         # Convert PIL to OpenCV
@@ -383,7 +383,16 @@ def auto_adjust_dv_photo(image_pil):
         enhancer = ImageEnhance.Sharpness(result_img)
         result_img = enhancer.enhance(1.1)
         
-        return result_img
+        # Return both the image and the head position info for guidelines
+        head_info = {
+            'top_y': y_start + top_y_scaled,
+            'chin_y': y_start + chin_y_scaled,
+            'eye_y': y_start + eye_y_scaled,
+            'head_height': head_height_scaled,
+            'canvas_size': canvas_size
+        }
+        
+        return result_img, head_info
         
     except Exception as e:
         # Improved fallback
@@ -392,18 +401,35 @@ def auto_adjust_dv_photo(image_pil):
         offset_x = (size - image_pil.width) // 2
         offset_y = (size - image_pil.height) // 2
         square_img.paste(image_pil, (offset_x, offset_y))
-        return square_img
+        
+        # Return dummy head info for fallback
+        head_info = {
+            'top_y': size * 0.25,
+            'chin_y': size * 0.75,
+            'eye_y': size * 0.5,
+            'head_height': size * 0.5,
+            'canvas_size': size
+        }
+        
+        return square_img, head_info
 
-# ---------------------- GUIDELINES ----------------------
-def draw_guidelines(img):
+# ---------------------- CORRECTED GUIDELINES WITH ACTUAL HEAD POSITION ----------------------
+def draw_guidelines(img, head_info):
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
-    # Head height boundaries
-    head_min_pixels = int(h * HEAD_MIN_RATIO)
-    head_max_pixels = int(h * HEAD_MAX_RATIO)
-    
-    # Eye line boundaries
+    # Extract head position information
+    top_y = head_info['top_y']
+    chin_y = head_info['chin_y']
+    eye_y = head_info['eye_y']
+    head_height = head_info['head_height']
+    canvas_size = head_info['canvas_size']
+
+    # Calculate actual head height percentage
+    actual_head_ratio = head_height / canvas_size
+    head_percentage = int(actual_head_ratio * 100)
+
+    # Eye line boundaries (56-69% from BOTTOM)
     eye_min_from_bottom = int(h * EYE_MIN_RATIO)
     eye_max_from_bottom = int(h * EYE_MAX_RATIO)
     
@@ -413,45 +439,77 @@ def draw_guidelines(img):
     # Draw bounding box
     draw.rectangle([(0, 0), (w-1, h-1)], outline="red", width=2)
     
-    # Draw head height bracket
-    bracket_x = w - 40
-    head_bracket_top = (h - head_max_pixels) // 2
-    head_bracket_bottom = head_bracket_top + head_max_pixels
+    # Draw ACTUAL head height bracket on the left
+    bracket_x = 40
     
-    # Vertical bracket
-    draw.line([(bracket_x, head_bracket_top), (bracket_x, head_bracket_bottom)], 
+    # Draw the actual head height measurement
+    draw.line([(bracket_x, top_y), (bracket_x, chin_y)], 
+              fill="blue", width=4)
+    
+    # Draw horizontal ticks at top and bottom of head
+    draw.line([(bracket_x-15, top_y), (bracket_x+15, top_y)], 
+              fill="blue", width=3)
+    draw.line([(bracket_x-15, chin_y), (bracket_x+15, chin_y)], 
               fill="blue", width=3)
     
-    # Horizontal ticks
-    draw.line([(bracket_x-10, head_bracket_top), (bracket_x+10, head_bracket_bottom)], 
-              fill="blue", width=2)
-    draw.line([(bracket_x-10, head_bracket_bottom), (bracket_x+10, head_bracket_bottom)], 
-              fill="blue", width=2)
+    # Add head height labels with actual percentage
+    draw.text((bracket_x+20, top_y - 15), f"Top", fill="blue")
+    draw.text((bracket_x+20, chin_y - 15), f"Chin", fill="blue")
     
-    # 50% mark
-    fifty_percent_y = head_bracket_top + head_min_pixels
-    draw.line([(bracket_x-5, fifty_percent_y), (bracket_x+5, fifty_percent_y)], 
-              fill="blue", width=2)
+    # Draw target head height range for reference (faint)
+    target_min_y = (h - int(h * HEAD_MAX_RATIO)) // 2
+    target_max_y = target_min_y + int(h * HEAD_MAX_RATIO)
+    target_50_y = target_min_y + int(h * HEAD_MIN_RATIO)
     
-    # Labels
-    draw.text((bracket_x+12, head_bracket_top - 15), "69%", fill="blue")
-    draw.text((bracket_x+12, fifty_percent_y - 15), "50%", fill="blue")
-    draw.text((bracket_x-100, head_bracket_top + (head_bracket_bottom-head_bracket_top)//2 - 10), 
-              "HEAD HEIGHT", fill="blue")
-    draw.text((bracket_x-80, head_bracket_top + (head_bracket_bottom-head_bracket_top)//2 + 10), 
-              "50-69%", fill="blue")
+    # Draw faint reference lines
+    draw.line([(bracket_x-25, target_min_y), (bracket_x-5, target_min_y)], 
+              fill="lightblue", width=2)
+    draw.line([(bracket_x-25, target_max_y), (bracket_x-5, target_max_y)], 
+              fill="lightblue", width=2)
+    draw.line([(bracket_x-25, target_50_y), (bracket_x-5, target_50_y)], 
+              fill="lightblue", width=2)
     
-    # Eye line area
-    draw.rectangle([(0, eye_max_y), (w, eye_min_y)], outline="green", width=2)
-    draw.line([(0, (eye_min_y + eye_max_y)//2), (w, (eye_min_y + eye_max_y)//2)], 
+    # Add reference labels
+    draw.text((10, target_min_y - 10), "69%", fill="lightblue")
+    draw.text((10, target_50_y - 10), "50%", fill="lightblue")
+    
+    # Display actual head height percentage
+    status_color = "green" if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO else "red"
+    draw.text((bracket_x-100, (top_y + chin_y)//2 - 30), 
+              f"HEAD HEIGHT: {head_percentage}%", fill=status_color)
+    draw.text((bracket_x-100, (top_y + chin_y)//2 - 10), 
+              "REQUIRED: 50-69%", fill="blue")
+    
+    if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO:
+        draw.text((bracket_x-100, (top_y + chin_y)//2 + 10), 
+                  "✓ WITHIN RANGE", fill="green")
+    else:
+        draw.text((bracket_x-100, (top_y + chin_y)//2 + 10), 
+                  "✗ OUT OF RANGE", fill="red")
+    
+    # Draw eye line area
+    draw.rectangle([(w-150, eye_max_y), (w, eye_min_y)], outline="green", width=2)
+    draw.line([(w-150, (eye_min_y + eye_max_y)//2), (w, (eye_min_y + eye_max_y)//2)], 
               fill="green", width=2)
     
-    # Eye labels
-    draw.text((10, eye_min_y - 25), "EYE LINE 56%", fill="green")
-    draw.text((10, eye_max_y + 5), "EYE LINE 69%", fill="green")
-    draw.text((w//2 - 50, (eye_min_y + eye_max_y)//2 - 10), "EYES MUST BE HERE", fill="green")
+    # Calculate actual eye position percentage
+    actual_eye_ratio = (h - eye_y) / h
+    eye_percentage = int(actual_eye_ratio * 100)
     
-    return img
+    # Eye line labels with actual position
+    eye_status_color = "green" if EYE_MIN_RATIO <= actual_eye_ratio <= EYE_MAX_RATIO else "red"
+    draw.text((w-140, eye_min_y - 25), f"EYE LINE: {eye_percentage}%", fill=eye_status_color)
+    draw.text((w-140, eye_max_y + 5), "REQUIRED: 56-69%", fill="green")
+    
+    # Mark actual eye position
+    draw.line([(w-160, eye_y), (w-140, eye_y)], fill="darkgreen", width=3)
+    
+    # Draw actual head boundaries (faint lines across image)
+    draw.line([(0, top_y), (w, top_y)], fill="lightblue", width=1)
+    draw.line([(0, chin_y), (w, chin_y)], fill="lightblue", width=1)
+    draw.line([(0, eye_y), (w, eye_y)], fill="lightgreen", width=1)
+    
+    return img, actual_head_ratio, actual_eye_ratio
 
 # ---------------------- STREAMLIT UI ----------------------
 uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG/PNG)", type=["jpg", "jpeg", "png"])
@@ -490,10 +548,22 @@ if uploaded_file:
                 bg_removed = remove_background(orig)
             
             with st.spinner("Auto-adjusting to DV specifications..."):
-                processed = auto_adjust_dv_photo(bg_removed)
+                processed, head_info = auto_adjust_dv_photo(bg_removed)
             
-            final_preview = draw_guidelines(processed.copy())
+            final_preview, actual_head_ratio, actual_eye_ratio = draw_guidelines(processed.copy(), head_info)
             st.image(final_preview, caption=f"DV Compliance Preview: {processed.size}")
+            
+            # Display measurements
+            col_meas1, col_meas2 = st.columns(2)
+            with col_meas1:
+                head_status = "✅ WITHIN RANGE" if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO else "❌ OUT OF RANGE"
+                st.metric("Head Height", f"{int(actual_head_ratio * 100)}%", 
+                         delta=head_status, delta_color="normal" if "WITHIN" in head_status else "off")
+            
+            with col_meas2:
+                eye_status = "✅ WITHIN RANGE" if EYE_MIN_RATIO <= actual_eye_ratio <= EYE_MAX_RATIO else "❌ OUT OF RANGE"
+                st.metric("Eye Position", f"{int(actual_eye_ratio * 100)}%", 
+                         delta=eye_status, delta_color="normal" if "WITHIN" in eye_status else "off")
             
             # Display success message and checklist
             st.success("🎉 **Initial check passed**")
@@ -510,7 +580,23 @@ if uploaded_file:
                     st.error(f"✗ **{check_name}** - *{message}*")
                     all_passed = False
             
-            if all_passed:
+            # Add head and eye position to checklist
+            head_check_passed = HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO
+            eye_check_passed = EYE_MIN_RATIO <= actual_eye_ratio <= EYE_MAX_RATIO
+            
+            if head_check_passed:
+                st.success(f"✓ **Head height correct** - *{int(actual_head_ratio * 100)}% (required: 50-69%)*")
+            else:
+                st.error(f"✗ **Head height incorrect** - *{int(actual_head_ratio * 100)}% (required: 50-69%)*")
+                all_passed = False
+                
+            if eye_check_passed:
+                st.success(f"✓ **Eye position correct** - *{int(actual_eye_ratio * 100)}% from bottom (required: 56-69%)*")
+            else:
+                st.error(f"✗ **Eye position incorrect** - *{int(actual_eye_ratio * 100)}% from bottom (required: 56-69%)*")
+                all_passed = False
+            
+            if all_passed and head_check_passed and eye_check_passed:
                 st.balloons()
                 st.success("🎉 All checks passed! Your photo is ready for DV Lottery submission.")
             else:
@@ -547,6 +633,8 @@ else:
     - **Correct Proportions**: Photo should have proper aspect ratio
     - **Background Removal**: Ability to remove and replace background with white
     - **No Red Eyes**: Checks for red-eye effect in the photo
+    - **Head Height**: Head must be 50-69% of total image height ✓
+    - **Eye Position**: Eyes must be 56-69% from bottom ✓
     
     ### 🎯 DV Lottery Photo Requirements:
     - Head height: 50% to 69% of image height
