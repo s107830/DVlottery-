@@ -6,4 +6,3 @@ onnxruntime==1.19.2
 protobuf>=4.25.3,<5
 mediapipe==0.10.21
 opencv-python-headless==4.9.0.80
-
