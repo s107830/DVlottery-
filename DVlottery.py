@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
 import cv2
 import io
@@ -17,13 +17,25 @@ BG_COLOR = (255, 255, 255)
 
 # ---------------------- FUNCTIONS ----------------------
 
-def remove_background(img_pil):
-    """Remove background using rembg and replace with white."""
+def remove_background_smooth(img_pil):
+    """
+    Remove background using rembg and smooth edges to preserve hair.
+    """
+    # Convert to PNG bytes
     img_byte = io.BytesIO()
     img_pil.save(img_byte, format="PNG")
     img_byte = img_byte.getvalue()
+
+    # Remove background
     result = remove(img_byte)
     fg = Image.open(io.BytesIO(result)).convert("RGBA")
+
+    # Extract alpha mask and apply slight blur to smooth hair edges
+    alpha = fg.split()[3]
+    alpha = alpha.filter(ImageFilter.GaussianBlur(radius=2))
+    fg.putalpha(alpha)
+
+    # Paste onto white background
     white_bg = Image.new("RGBA", fg.size, BG_COLOR + (255,))
     composite = Image.alpha_composite(white_bg, fg)
     return composite.convert("RGB")
@@ -112,14 +124,16 @@ if uploaded_file:
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("📤 Original Photo")
-            st.image(orig)  # removed use_container_width
+            st.image(orig)
 
         with col2:
             st.subheader("✅ Processed (DV Compliant)")
-            bg_removed = remove_background(orig)
+            # Optional: upscale for better hair detail
+            orig_large = orig.resize((orig.width*2, orig.height*2), Image.LANCZOS)
+            bg_removed = remove_background_smooth(orig_large)
             processed = crop_and_resize(bg_removed)
             final_preview = draw_guidelines(processed.copy())
-            st.image(final_preview, caption="DV Compliance Preview")  # removed use_container_width
+            st.image(final_preview, caption="DV Compliance Preview")
 
             # Download button
             buf = io.BytesIO()
