@@ -7,7 +7,7 @@ from rembg import remove
 
 # ---------------------- STREAMLIT SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("📸 DV Lottery Photo Editor — Fully DV Compliant")
+st.title("📸 DV Lottery Photo Editor — Fully DV Compliant Auto-Adjust")
 
 # ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
@@ -42,56 +42,74 @@ def detect_face(cv_img):
     return x, y, w, h
 
 def auto_adjust_dv_photo(image_pil):
-    """Fully auto-adjust the photo to meet DV requirements safely."""
+    """Fully auto-adjust the photo to meet DV requirements precisely."""
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    img_h_orig, img_w_orig = image_bgr.shape[:2]
     x, y, w, h = detect_face(image_bgr)
 
     # Padding for hair/chin
     top_pad = int(0.15 * h)
     bottom_pad = int(0.10 * h)
     head_top = max(0, y - top_pad)
-    head_bottom = min(image_bgr.shape[0], y + h + bottom_pad)
+    head_bottom = min(img_h_orig, y + h + bottom_pad)
     head_height = head_bottom - head_top
 
-    # Eye line approx
+    # Approx eye height (from top of image)
     eye_y = y + int(0.45 * h)
 
-    # Canvas size
-    desired_head_ratio = (HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2
-    canvas_size = int(max(MIN_SIZE, min(MAX_SIZE, head_height / desired_head_ratio)))
+    # Current ratios
+    current_head_ratio = head_height / img_h_orig
+    current_eye_ratio = (img_h_orig - eye_y) / img_h_orig
+
+    # Target ratios (midpoints)
+    target_head_ratio = (HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2
+    target_eye_ratio = (EYE_MIN_RATIO + EYE_MAX_RATIO) / 2
+
+    # Compute scale factor to satisfy both constraints
+    scale_head = target_head_ratio / current_head_ratio
+    scale_eye = target_eye_ratio / current_eye_ratio
+    scale_factor = min(scale_head, scale_eye)
 
     # Resize image
-    scale_factor = canvas_size / image_bgr.shape[0]
-    resized_img = cv2.resize(image_bgr, (int(image_bgr.shape[1]*scale_factor), int(image_bgr.shape[0]*scale_factor)), interpolation=cv2.INTER_AREA)
-    img_h, img_w = resized_img.shape[:2]
+    new_w = int(img_w_orig * scale_factor)
+    new_h = int(img_h_orig * scale_factor)
+    resized_img = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     # Scaled positions
     head_top_scaled = int(head_top * scale_factor)
+    head_bottom_scaled = int(head_bottom * scale_factor)
+    head_height_scaled = head_bottom_scaled - head_top_scaled
     eye_y_scaled = int(eye_y * scale_factor)
-    head_height_scaled = int(head_height * scale_factor)
 
-    # Vertical offset to place eye line
-    target_eye_y = int(canvas_size * ((EYE_MIN_RATIO + EYE_MAX_RATIO)/2))
-    top_offset = target_eye_y - (eye_y_scaled - head_top_scaled)
+    # Determine canvas size
+    canvas_size = max(new_w, new_h)
+    canvas_size = max(MIN_SIZE, min(MAX_SIZE, canvas_size))
+    canvas = np.full((canvas_size, canvas_size, 3), BG_COLOR, dtype=np.uint8)
 
-    # Horizontal offset (center)
-    left_offset = (canvas_size - img_w) // 2
+    # Vertical offset to place eye line correctly
+    eye_target = int(canvas_size * target_eye_ratio)
+    top_offset = eye_target - (eye_y_scaled - head_top_scaled)
+    # Clip top offset to ensure image fits
+    top_offset = max(min(top_offset, canvas_size - new_h), 0)
+
+    # Horizontal center
+    left_offset = (canvas_size - new_w) // 2
+    left_offset = max(left_offset, 0)
 
     # Compute paste region safely
-    canvas = np.full((canvas_size, canvas_size, 3), BG_COLOR, dtype=np.uint8)
-    y1 = max(0, top_offset)
-    y2 = min(canvas_size, top_offset + img_h)
-    x1 = max(0, left_offset)
-    x2 = min(canvas_size, left_offset + img_w)
+    y1 = top_offset
+    y2 = top_offset + new_h
+    x1 = left_offset
+    x2 = left_offset + new_w
 
-    src_y1 = max(0, -top_offset)
-    src_y2 = src_y1 + (y2 - y1)
-    src_x1 = max(0, -left_offset)
-    src_x2 = src_x1 + (x2 - x1)
-
-    if y2 > y1 and x2 > x1:
-        canvas[y1:y2, x1:x2] = resized_img[src_y1:src_y2, src_x1:src_x2]
+    # Clip if exceeds canvas
+    y2 = min(y2, canvas_size)
+    x2 = min(x2, canvas_size)
+    h_clip = y2 - y1
+    w_clip = x2 - x1
+    if h_clip > 0 and w_clip > 0:
+        canvas[y1:y2, x1:x2] = resized_img[0:h_clip, 0:w_clip]
 
     return Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
 
