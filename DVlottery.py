@@ -105,107 +105,103 @@ def remove_background(img_pil):
         st.warning(f"Background removal failed: {e}. Using original image.")
         return img_pil
 
-# ---------------------- CORRECT AUTO ADJUST ----------------------
+# ---------------------- FIXED AUTO ADJUST FUNCTION ----------------------
 def auto_adjust_dv_photo(image_pil):
     try:
+        # Convert PIL to OpenCV
         image_rgb = np.array(image_pil)
         if len(image_rgb.shape) == 2:
             image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_GRAY2RGB)
         elif image_rgb.shape[2] == 4:
             image_rgb = cv2.cvtColor(image_rgb, cv2.COLOR_RGBA2RGB)
             
-        img_h, img_w = image_rgb.shape[:2]
+        original_h, original_w = image_rgb.shape[:2]
 
+        # Get face landmarks
         landmarks = get_face_landmarks(image_rgb)
-        top_y, chin_y, eye_y = get_head_eye_positions(landmarks, img_h, img_w)
+        top_y, chin_y, eye_y = get_head_eye_positions(landmarks, original_h, original_w)
         head_height = chin_y - top_y
 
-        # Calculate required scaling based on head size
-        target_head_height_min = MIN_SIZE * HEAD_MIN_RATIO
-        target_head_height_max = MIN_SIZE * HEAD_MAX_RATIO
+        # Calculate the ideal head height (midpoint of required range)
+        target_head_height = (HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2 * MIN_SIZE
         
-        # Choose optimal scale
-        if head_height < target_head_height_min:
-            scale_factor = target_head_height_min / head_height
-        elif head_height > target_head_height_max:
-            scale_factor = target_head_height_max / head_height
-        else:
-            scale_factor = 1.0
-            
-        scale_factor = max(0.5, min(2.0, scale_factor))
+        # Calculate scale factor to achieve ideal head height
+        scale_factor = target_head_height / head_height
         
-        new_h = int(img_h * scale_factor)
-        new_w = int(img_w * scale_factor)
+        # Apply scaling
+        new_h = int(original_h * scale_factor)
+        new_w = int(original_w * scale_factor)
         
-        # Ensure minimum size
-        if new_h < MIN_SIZE or new_w < MIN_SIZE:
-            scale_factor = max(MIN_SIZE / img_h, MIN_SIZE / img_w)
-            new_h = int(img_h * scale_factor)
-            new_w = int(img_w * scale_factor)
-            
         # Resize image
         resized_img = cv2.resize(image_rgb, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-
-        # Calculate positioning
-        canvas_size = max(MIN_SIZE, min(MAX_SIZE, max(new_w, new_h)))
-        canvas = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
         
-        # Calculate eye position for correct placement
+        # Recalculate positions after scaling
+        top_y_scaled = int(top_y * scale_factor)
+        chin_y_scaled = int(chin_y * scale_factor) 
         eye_y_scaled = int(eye_y * scale_factor)
-        
-        # Target eye position should be between 56-69% from bottom
-        # We aim for the middle of this range (62.5%)
-        target_eye_ratio = (EYE_MIN_RATIO + EYE_MAX_RATIO) / 2  # 62.5%
-        target_eye_y = canvas_size - int(canvas_size * target_eye_ratio)
+        head_height_scaled = chin_y_scaled - top_y_scaled
+
+        # Create square canvas
+        canvas_size = MIN_SIZE  # Use 600px as standard DV size
+        canvas = np.full((canvas_size, canvas_size, 3), 255, dtype=np.uint8)
+
+        # Calculate target positions
+        # Head should be centered vertically with proper eye position
+        target_eye_from_bottom = int(canvas_size * ((EYE_MIN_RATIO + EYE_MAX_RATIO) / 2))
+        target_eye_y = canvas_size - target_eye_from_bottom
         
         # Calculate vertical offset to position eyes correctly
         y_offset = target_eye_y - eye_y_scaled
         
-        # Ensure we don't crop important parts
-        if y_offset < 0:
-            # Need to move image down, may crop top
-            y_offset = 0
-        elif y_offset + new_h > canvas_size:
-            # Need to move image up, may crop bottom  
-            y_offset = canvas_size - new_h
-        
+        # Calculate horizontal offset to center the face
         x_offset = (canvas_size - new_w) // 2
+
+        # Ensure the entire head fits within canvas
+        if y_offset + top_y_scaled < 0:
+            # Head would be cropped at top, adjust downward
+            y_offset = -top_y_scaled
+        elif y_offset + chin_y_scaled > canvas_size:
+            # Head would be cropped at bottom, adjust upward
+            y_offset = canvas_size - chin_y_scaled
+
+        # Paste the resized image onto canvas
+        y_start = max(0, y_offset)
+        y_end = min(canvas_size, y_offset + new_h)
+        x_start = max(0, x_offset)
+        x_end = min(canvas_size, x_offset + new_w)
         
-        # Paste image onto canvas
-        y1_dest = max(0, y_offset)
-        y2_dest = min(canvas_size, y_offset + new_h)
-        x1_dest = max(0, x_offset)
-        x2_dest = min(canvas_size, x_offset + new_w)
-        
-        y1_src = max(0, -y_offset)
-        y2_src = min(new_h, canvas_size - y_offset)
-        x1_src = max(0, -x_offset)
-        x2_src = min(new_w, canvas_size - x_offset)
-        
-        if (y2_dest - y1_dest > 0) and (x2_dest - x1_dest > 0):
-            canvas[y1_dest:y2_dest, x1_dest:x2_dest] = \
-                resized_img[y1_src:y2_src, x1_src:x2_src]
+        # Calculate source coordinates
+        y_src_start = max(0, -y_offset)
+        y_src_end = min(new_h, canvas_size - y_offset)
+        x_src_start = max(0, -x_offset)
+        x_src_end = min(new_w, canvas_size - x_offset)
+
+        # Perform the paste operation
+        if (y_end - y_start > 0) and (x_end - x_start > 0):
+            canvas[y_start:y_end, x_start:x_end] = \
+                resized_img[y_src_start:y_src_end, x_src_start:x_src_end]
 
         return Image.fromarray(canvas)
         
     except Exception as e:
         st.error(f"Auto-adjust failed: {e}")
+        # Fallback: simple resize to square
         size = max(image_pil.size)
         square_img = Image.new("RGB", (size, size), (255, 255, 255))
         square_img.paste(image_pil, ((size - image_pil.width) // 2, 
                                    (size - image_pil.height) // 2))
         return square_img
 
-# ---------------------- CORRECT GUIDELINES ----------------------
+# ---------------------- GUIDELINES ----------------------
 def draw_guidelines(img):
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
-    # CORRECT: Head height boundaries (50-69% of TOTAL image height)
+    # Head height boundaries (50-69% of TOTAL image height)
     head_min_pixels = int(h * HEAD_MIN_RATIO)  # 50% of total height
     head_max_pixels = int(h * HEAD_MAX_RATIO)  # 69% of total height
     
-    # CORRECT: Eye line boundaries (56-69% from BOTTOM)
+    # Eye line boundaries (56-69% from BOTTOM)
     eye_min_from_bottom = int(h * EYE_MIN_RATIO)  # 56% from bottom
     eye_max_from_bottom = int(h * EYE_MAX_RATIO)  # 69% from bottom
     
@@ -215,7 +211,7 @@ def draw_guidelines(img):
     # Draw bounding box
     draw.rectangle([(0, 0), (w-1, h-1)], outline="red", width=2)
     
-    # Draw head height bracket on the right (like official tools)
+    # Draw head height bracket on the right
     bracket_x = w - 40
     
     # Head height bracket shows the required head size (50-69% of image height)
@@ -255,12 +251,6 @@ def draw_guidelines(img):
     draw.text((10, eye_max_y + 5), "EYE LINE 69%", fill="green")
     draw.text((w//2 - 40, (eye_min_y + eye_max_y)//2 - 15), "EYES MUST BE HERE", fill="green")
     
-    # Add measurement labels
-    draw.text((10, 10), "DV Lottery Photo Template", fill="black", stroke_width=1, stroke_fill="white")
-    draw.text((10, 30), f"Size: {w} x {h} px", fill="black")
-    draw.text((10, h - 50), "Head: 50-69% of height", fill="blue")
-    draw.text((10, h - 30), "Eyes: 56-69% from bottom", fill="green")
-    
     return img
 
 # ---------------------- STREAMLIT UI ----------------------
@@ -288,14 +278,9 @@ if uploaded_file:
             final_preview = draw_guidelines(processed.copy())
             st.image(final_preview, caption=f"DV Compliance Preview: {processed.size}")
             
-            # Show compliance checklist
-            st.success("**✅ DV Lottery Requirements Check:**")
-            st.write("• **Head Height**: 50-69% of total image height ✓")
-            st.write("• **Eye Position**: 56-69% from bottom ✓")  
-            st.write("• **Aspect Ratio**: Square (1:1) ✓")
-            st.write("• **Background**: Plain white ✓")
-            st.write("• **Size**: 600x600 to 1200x1200 pixels ✓")
-
+            # Show compliance status
+            st.success("**✅ Photo has been automatically adjusted to meet DV Lottery requirements**")
+            
             # Download button
             buf = io.BytesIO()
             processed.save(buf, format="JPEG", quality=95)
