@@ -1,132 +1,136 @@
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
-import cv2
 import numpy as np
+import cv2
 import io
-import os
 from rembg import remove
 
-CASCADE_PATH = "haarcascade_frontalface_default.xml"
-FINAL_SIZE = 600  # 2x2 inch @ 300 DPI
-DPI = 300
+# Streamlit setup
+st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
+st.title("📸 DV Lottery Photo Editor — Auto Crop, White Background & Official Size Guide")
 
-if not os.path.isfile(CASCADE_PATH):
-    st.error(f"Missing cascade file: {CASCADE_PATH}")
-    st.stop()
+# Constants
+FINAL_PX = 600            # 2x2 inch at 300 DPI = 600x600 pixels
+HEAD_MIN_RATIO = 0.50     # 50% of image height (1 inch)
+HEAD_MAX_RATIO = 0.69     # 69% of image height (~1 3/8 inch)
+BG_COLOR = (255, 255, 255)
 
-face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+# ---------------------- FUNCTIONS ----------------------
 
-def replace_background_white(np_img):
-    rgb = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
-    img_pil = Image.fromarray(rgb)
-    output = remove(img_pil)
-    rgba = np.array(output)
-    if rgba.shape[2] == 4:
-        alpha = rgba[:, :, 3] / 255.0
-        white_bg = np.ones_like(rgba[:, :, :3], dtype=np.uint8) * 255
-        composite = white_bg * (1 - alpha[:, :, None]) + rgba[:, :, :3] * alpha[:, :, None]
-        result = composite.astype(np.uint8)
-    else:
-        result = rgba
-    return cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+def remove_background(img_pil):
+    """Remove background using rembg and replace with pure white."""
+    img_byte = io.BytesIO()
+    img_pil.save(img_byte, format="PNG")
+    img_byte = img_byte.getvalue()
+    result = remove(img_byte)
+    fg = Image.open(io.BytesIO(result)).convert("RGBA")
+    white_bg = Image.new("RGBA", fg.size, BG_COLOR + (255,))
+    composite = Image.alpha_composite(white_bg, fg)
+    return composite.convert("RGB")
 
-def auto_crop_dv(image: Image.Image, final_size=FINAL_SIZE):
-    image = image.convert("RGB")
-    np_img = np.array(image)
-    bgr = cv2.cvtColor(np_img, cv2.COLOR_RGB2BGR)
-    processed = replace_background_white(bgr)
-
-    gray = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(100, 100))
+def detect_face(cv_img):
+    """Detect largest face in an image."""
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
     if len(faces) == 0:
-        raise Exception("No face detected.")
-    x, y, w, h = max(faces, key=lambda f: f[2]*f[3])
-    height, width = processed.shape[:2]
+        raise Exception("No face detected. Please upload a clear, frontal photo.")
+    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+    return x, y, w, h
 
-    head_top = max(0, int(y - 0.25*h))
-    chin_bottom = min(height, int(y + h + 0.10*h))
-    head_height = chin_bottom - head_top
-    target_ratio = 0.60
-    target_crop_h = int(head_height / target_ratio)
-    center_y = int((head_top + chin_bottom) / 2)
-    top = max(0, center_y - target_crop_h // 2)
-    bottom = min(height, top + target_crop_h)
+def crop_and_resize(image_pil):
+    """Crop around face and resize to DV 2x2 inch ratio."""
+    image_rgb = np.array(image_pil)
+    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    x, y, w, h = detect_face(image_bgr)
 
-    center_x = x + w // 2
-    crop_width = target_crop_h
-    left = max(0, center_x - crop_width // 2)
-    right = min(width, left + crop_width)
+    height, width = image_bgr.shape[:2]
+    top = max(0, y - int(0.45 * h))
+    bottom = min(height, y + h + int(0.35 * h))
+    left = max(0, x - int(0.25 * w))
+    right = min(width, x + w + int(0.25 * w))
 
-    crop_img = processed[top:bottom, left:right]
+    cropped = image_bgr[top:bottom, left:right]
 
-    c_h, c_w = crop_img.shape[:2]
+    # Pad to square with white
+    c_h, c_w = cropped.shape[:2]
+    diff = abs(c_h - c_w)
     if c_h > c_w:
-        pad = (c_h - c_w) // 2
-        crop_img = cv2.copyMakeBorder(crop_img, 0, 0, pad, pad, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+        pad = (diff // 2, diff - diff // 2)
+        cropped = cv2.copyMakeBorder(cropped, 0, 0, pad[0], pad[1], cv2.BORDER_CONSTANT, value=BG_COLOR)
     elif c_w > c_h:
-        pad = (c_w - c_h) // 2
-        crop_img = cv2.copyMakeBorder(crop_img, pad, pad, 0, 0, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+        pad = (diff // 2, diff - diff // 2)
+        cropped = cv2.copyMakeBorder(cropped, pad[0], pad[1], 0, 0, cv2.BORDER_CONSTANT, value=BG_COLOR)
 
-    resized = cv2.resize(crop_img, (final_size, final_size), interpolation=cv2.INTER_AREA)
-    final_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(final_rgb)
+    resized = cv2.resize(cropped, (FINAL_PX, FINAL_PX), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
 
-def add_dv_guidelines(image: Image.Image):
-    """Draw guidelines like sample photo with inch markers and measurements."""
-    img = image.copy()
+def draw_guidelines(img):
+    """Draw official DV photo size guides on image."""
     draw = ImageDraw.Draw(img)
-    W, H = img.size
-    inch_per_px = 2 / W
+    w, h = img.size
 
-    face_top = int(H * 0.35)
-    face_bottom = int(H * 0.85)
-    eye_line = int(H * 0.55)
+    # outer 2x2 inch border
+    draw.rectangle([(0, 0), (w-1, h-1)], outline="gray", width=2)
 
-    face_height_inch = round((face_bottom - face_top) * inch_per_px, 2)
-    eye_line_inch = round(eye_line * inch_per_px, 2)
+    # Head height (50–69%)
+    head_min = int(h * (1 - HEAD_MAX_RATIO) / 2)
+    head_max = int(h * (1 - HEAD_MIN_RATIO) / 2)
+    top_y = head_min
+    bottom_y = h - head_min
 
-    # Blue lines
-    line_color = (0, 90, 255)
-    draw.line([(0, face_top), (W, face_top)], fill=line_color, width=2)
-    draw.line([(0, face_bottom), (W, face_bottom)], fill=line_color, width=2)
-    draw.line([(0, eye_line), (W, eye_line)], fill=line_color, width=2)
+    # Guidelines
+    draw.line([(w//2 - 150, top_y), (w//2 + 150, top_y)], fill="blue", width=2)
+    draw.line([(w//2 - 150, h - top_y), (w//2 + 150, h - top_y)], fill="blue", width=2)
+    draw.text((w//2 + 155, (top_y + h - top_y)//2 - 20), "Head height 1–1⅜ inch (25–35 mm)", fill="blue")
 
-    # Border
-    draw.rectangle([(0, 0), (W - 1, H - 1)], outline=(0, 100, 255), width=4)
+    # Eye line (approx 1.18 inch from bottom)
+    eye_line_y = int(h - (1.18 / 2.0) * (h / 2.0))
+    draw.line([(50, eye_line_y), (w - 50, eye_line_y)], fill="green", width=2)
+    draw.text((60, eye_line_y + 5), "Eye line ~1.18 in from bottom", fill="green")
 
-    # Labels
-    try:
-        font = ImageFont.truetype("arial.ttf", 22)
-    except:
-        font = ImageFont.load_default()
+    # Inch markings along sides
+    inch_px = FINAL_PX // 2  # 300 px = 1 inch
+    for i in range(1, 2):
+        y = i * inch_px
+        draw.line([(0, y), (15, y)], fill="black", width=2)
+        draw.text((20, y - 10), f"{i} inch", fill="black")
 
-    draw.text((10, face_top - 25), f"Face: {face_height_inch} inch", fill="blue", font=font)
-    draw.text((10, eye_line - 25), f"Eye-line: {eye_line_inch} inch", fill="blue", font=font)
-    draw.text((W - 140, H - 30), "2 inch × 2 inch", fill="gray", font=font)
+        draw.line([(y, 0), (y, 15)], fill="black", width=2)
+        draw.text((y - 15, 20), f"{i} inch", fill="black")
+
+    draw.text((10, 10), "2x2 inch (51x51 mm)", fill="black")
     return img
 
-# Streamlit UI
-st.set_page_config(page_title="DV Photo Studio", layout="wide")
-st.title("📏 DV Lottery Photo Studio (with Guidelines)")
+# ---------------------- STREAMLIT UI ----------------------
 
-uploaded_file = st.file_uploader("Upload a photo", type=["jpg", "jpeg"])
+uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG)", type=["jpg", "jpeg"])
+
 if uploaded_file:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Original", use_column_width=True)
+    orig = Image.open(uploaded_file).convert("RGB")
 
-    try:
-        processed = auto_crop_dv(image)
-        preview = add_dv_guidelines(processed)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("📤 Original Photo")
+        st.image(orig, use_container_width=True)
 
-        st.image(preview, caption="📐 DV Guideline Preview (2×2 inches)", use_column_width=True)
-        buf = io.BytesIO()
-        processed.save(buf, format="JPEG", quality=95)
-        buf.seek(0)
-        st.download_button(
-            "📥 Download Final Clean Photo (No Lines)",
-            buf,
-            file_name="dvlottery_ready.jpg",
-            mime="image/jpeg",
-        )
-    except Exception as e:
-        st.error(f"Error: {e}")
+    with col2:
+        st.subheader("✅ Processed (DV Compliant)")
+        try:
+            bg_removed = remove_background(orig)
+            processed = crop_and_resize(bg_removed)
+            final_preview = draw_guidelines(processed.copy())
+
+            st.image(final_preview, use_container_width=True, caption="DV Compliance Preview")
+
+            buf = io.BytesIO()
+            processed.save(buf, format="JPEG", quality=95)
+            buf.seek(0)
+            st.download_button(
+                "⬇️ Download DV-Ready Photo (600x600)",
+                data=buf,
+                file_name="dvlottery_photo.jpg",
+                mime="image/jpeg"
+            )
+        except Exception as e:
+            st.error(f"❌ Could not process image: {e}")
