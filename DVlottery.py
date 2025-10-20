@@ -489,7 +489,7 @@ if uploaded_file:
             processed_with_lines.save(buf_with_guides, format="JPEG", quality=95)
             st.download_button(
                 label="⬇️ Download with Guidelines",
-                data=buf_with_guides.getvalue(),  # FIXED: Changed from b_with_guides to buf_with_guides
+                data=buf_with_guides.getvalue(),
                 file_name="dv_lottery_photo_with_guides.jpg",
                 mime="image/jpeg",
                 use_container_width=True,
@@ -520,4 +520,71 @@ if uploaded_file:
             with col2:
                 st.markdown("""
                 **📏 Measurement Requirements:**
-                - **Head Height:** 50%
+                - **Head Height:** 50% - 69% of photo height
+                - **Eye Position:** 56% - 69% from top of photo
+                - **Centering:** Head centered in frame
+                
+                **❌ Common Rejection Reasons:**
+                - Wrong head size
+                - Incorrect eye position  
+                - Poor lighting/shadow
+                - Inappropriate background
+                - Wrong photo dimensions
+                - Blurry or low quality
+                """)
+            
+            st.success("**✅ This tool automatically ensures your photo meets the head height and eye position requirements!**")
+
+else:
+    # Welcome screen when no file uploaded
+    st.markdown("""
+    ## 🎯 Welcome to DV Lottery Photo Editor
+    
+    This tool helps you create perfectly compliant photos for the Diversity Visa Lottery application.
+    
+    ### 🚀 How it works:
+    1. **Upload** your photo
+    2. **Automatic** background removal and resizing
+    3. **Check** compliance results
+    4. **Press Fix Button** for head-to-chin auto-adjustment
+    5. **Download** your ready-to-use DV photo
+    
+    ### 📸 For best results:
+    - Use a clear front-facing photo
+    - Ensure good lighting
+    - Plain background preferred
+    - Neutral expression, eyes open
+    
+    **👆 Upload your photo above to get started!**
+    """)
+    
+    # Example preview
+    st.subheader("📋 Example of Compliant Photo")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**✅ Correct Head Size**")
+        st.info("Head: 50-69% of photo")
+        
+    with col2:
+        st.markdown("**✅ Correct Eye Position**")
+        st.info("Eyes: 56-69% from top")
+        
+    with col3:
+        st.markdown("**✅ Proper Composition**")
+        st.info("Centered, clear, well-lit")
+
+    # Clear session state when no file is uploaded
+    if 'processed_data' in st.session_state:
+        del st.session_state.processed_data
+    if 'last_upload' in st.session_state:
+        del st.session_state.last_upload
+
+# Footer
+st.markdown("---")
+st.markdown(
+    "<div style='text-align: center; color: gray;'>"
+    "DV Lottery Photo Editor | Automatically ensures your photo meets official requirements"
+    "</div>",
+    unsafe_allow_html=True
+)
