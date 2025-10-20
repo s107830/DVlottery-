@@ -513,7 +513,7 @@ if uploaded_file:
         data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
         st.download_button(
             label="⬇️ Download with Guidelines",
-            data=b_with_guides.getvalue(),
+            data=buf_with_guides.getvalue(),  # FIXED: Changed from b_with_guides to buf_with_guides
             file_name="dv_lottery_photo_with_guides.jpg",
             mime="image/jpeg",
             use_container_width=True
