@@ -62,6 +62,7 @@ def get_face_bounding_box(cv_img):
         width = int(bbox.width * w)
         height = int(bbox.height * h)
         
+        # Adjust for hair inclusion
         landmarks.landmark[10] = type('obj', (object,), {'y': max(0, (y - height * 0.2))/h})()
         landmarks.landmark[152] = type('obj', (object,), {'y': (y + height * 1.1)/h})()
         eye_y = y + height * 0.3
@@ -303,8 +304,8 @@ def remove_background_basic(img_pil):
 def remove_background(img_pil):
     return remove_background_advanced(img_pil)
 
-# ---------------------- ENHANCED AUTO ADJUST WITH GUARANTEED RANGE ----------------------
-def auto_adjust_dv_photo(image_pil, force_correction=False):
+# ---------------------- AUTO ADJUST WITH HEAD DETECTION ----------------------
+def auto_adjust_dv_photo(image_pil):
     try:
         # Convert PIL to OpenCV
         image_rgb = np.array(image_pil)
@@ -315,28 +316,17 @@ def auto_adjust_dv_photo(image_pil, force_correction=False):
             
         original_h, original_w = image_rgb.shape[:2]
 
-        # Get face landmarks
+        # Get face landmarks with hair consideration
         landmarks = get_face_landmarks(image_rgb)
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks, original_h, original_w)
         head_height = chin_y - top_y
 
         # Calculate scale factor for optimal head size
         target_head_height = (HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2 * MIN_SIZE
-        
-        # If forcing correction, be more aggressive with scaling
-        if force_correction:
-            # Ensure we're within range by targeting the midpoint more aggressively
-            if head_height < MIN_SIZE * HEAD_MIN_RATIO:
-                scale_factor = (MIN_SIZE * ((HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2)) / head_height
-            elif head_height > MIN_SIZE * HEAD_MAX_RATIO:
-                scale_factor = (MIN_SIZE * ((HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2)) / head_height
-            else:
-                scale_factor = target_head_height / head_height
-        else:
-            scale_factor = target_head_height / head_height
+        scale_factor = target_head_height / head_height
         
         # Apply reasonable scaling limits
-        scale_factor = max(0.5, min(2.0, scale_factor))
+        scale_factor = max(0.4, min(2.5, scale_factor))
         
         new_h = int(original_h * scale_factor)
         new_w = int(original_w * scale_factor)
@@ -356,58 +346,34 @@ def auto_adjust_dv_photo(image_pil, force_correction=False):
 
         # Calculate optimal eye position
         target_eye_ratio = (EYE_MIN_RATIO + EYE_MAX_RATIO) / 2
-        
-        # If forcing correction, adjust target based on previous errors
-        if force_correction:
-            current_eye_ratio_scaled = eye_y_scaled / new_h
-            if current_eye_ratio_scaled < 0.4:  # Eyes too high
-                target_eye_ratio = min(EYE_MAX_RATIO, target_eye_ratio + 0.05)
-            elif current_eye_ratio_scaled > 0.6:  # Eyes too low
-                target_eye_ratio = max(EYE_MIN_RATIO, target_eye_ratio - 0.05)
-        
         target_eye_y = canvas_size - int(canvas_size * target_eye_ratio)
         
         # Calculate vertical offset
         y_offset = target_eye_y - eye_y_scaled
         
-        # Ensure we don't crop the head
+        # Ensure full head including hair is visible
         min_y_offset = -top_y_scaled
         max_y_offset = canvas_size - chin_y_scaled
         
-        # Clamp the y_offset to keep entire head in frame
+        # Clamp y_offset to keep entire head in frame
         y_offset = max(min_y_offset, min(y_offset, max_y_offset))
-        
-        # If forcing correction and still out of range, adjust more aggressively
-        if force_correction:
-            # Check final eye position
-            final_eye_y = eye_y_scaled + y_offset
-            final_eye_ratio = (canvas_size - final_eye_y) / canvas_size
-            
-            if final_eye_ratio < EYE_MIN_RATIO:
-                # Still too high, try to move down more
-                additional_offset = int(canvas_size * (EYE_MIN_RATIO - final_eye_ratio))
-                y_offset = min(max_y_offset, y_offset + additional_offset)
-            elif final_eye_ratio > EYE_MAX_RATIO:
-                # Still too low, try to move up more
-                additional_offset = int(canvas_size * (final_eye_ratio - EYE_MAX_RATIO))
-                y_offset = max(min_y_offset, y_offset - additional_offset)
         
         # Center horizontally
         x_offset = (canvas_size - new_w) // 2
 
-        # Paste the resized image onto canvas
+        # Smart cropping to ensure full head visibility
         y_start = max(0, y_offset)
         y_end = min(canvas_size, y_offset + new_h)
         x_start = max(0, x_offset)
         x_end = min(canvas_size, x_offset + new_w)
         
-        # Calculate source coordinates
+        # Source coordinates
         y_src_start = max(0, -y_offset)
         y_src_end = min(new_h, canvas_size - y_offset)
         x_src_start = max(0, -x_offset)
         x_src_end = min(new_w, canvas_size - x_offset)
 
-        # Perform the paste operation
+        # Paste with bounds checking
         if (y_end - y_start > 0) and (x_end - x_start > 0):
             canvas[y_start:y_end, x_start:x_end] = \
                 resized_img[y_src_start:y_src_end, x_src_start:x_src_end]
@@ -417,24 +383,19 @@ def auto_adjust_dv_photo(image_pil, force_correction=False):
         enhancer = ImageEnhance.Sharpness(result_img)
         result_img = enhancer.enhance(1.1)
         
-        # Calculate actual positions in final image
-        final_top_y = y_start + top_y_scaled
-        final_chin_y = y_start + chin_y_scaled
-        final_eye_y = y_start + eye_y_scaled
-        
         # Return both the image and the head position info for guidelines
         head_info = {
-            'top_y': final_top_y,
-            'chin_y': final_chin_y,
-            'eye_y': final_eye_y,
-            'head_height': final_chin_y - final_top_y,
+            'top_y': y_start + top_y_scaled,
+            'chin_y': y_start + chin_y_scaled,
+            'eye_y': y_start + eye_y_scaled,
+            'head_height': head_height_scaled,
             'canvas_size': canvas_size
         }
         
         return result_img, head_info
         
     except Exception as e:
-        # Fallback: simple resize to square
+        # Improved fallback
         size = max(MIN_SIZE, max(image_pil.size))
         square_img = Image.new("RGB", (size, size), (255, 255, 255))
         offset_x = (size - image_pil.width) // 2
@@ -443,16 +404,16 @@ def auto_adjust_dv_photo(image_pil, force_correction=False):
         
         # Return dummy head info for fallback
         head_info = {
-            'top_y': size * 0.3,
-            'chin_y': size * 0.7,
+            'top_y': size * 0.25,
+            'chin_y': size * 0.75,
             'eye_y': size * 0.5,
-            'head_height': size * 0.4,
+            'head_height': size * 0.5,
             'canvas_size': size
         }
         
         return square_img, head_info
 
-# ---------------------- FIXED GUIDELINES FUNCTION ----------------------
+# ---------------------- CORRECTED GUIDELINES WITH ACTUAL HEAD POSITION ----------------------
 def draw_guidelines(img, head_info):
     draw = ImageDraw.Draw(img)
     w, h = img.size
@@ -468,80 +429,93 @@ def draw_guidelines(img, head_info):
     actual_head_ratio = head_height / canvas_size
     head_percentage = int(actual_head_ratio * 100)
 
-    # Calculate actual eye position percentage (from bottom)
-    actual_eye_ratio = (canvas_size - eye_y) / canvas_size
-    eye_percentage = int(actual_eye_ratio * 100)
+    # Eye line boundaries (56-69% from BOTTOM)
+    eye_min_from_bottom = int(h * EYE_MIN_RATIO)
+    eye_max_from_bottom = int(h * EYE_MAX_RATIO)
+    
+    eye_min_y = h - eye_min_from_bottom
+    eye_max_y = h - eye_max_from_bottom
 
     # Draw bounding box
     draw.rectangle([(0, 0), (w-1, h-1)], outline="red", width=2)
     
-    # Draw head height bracket on the LEFT side
-    bracket_x = 30
+    # Draw ACTUAL head height bracket on the left
+    bracket_x = 40
     
-    # Draw the actual head height measurement (from top of head to chin)
-    draw.line([(bracket_x, top_y), (bracket_x, chin_y)], fill="blue", width=4)
+    # Draw the actual head height measurement
+    draw.line([(bracket_x, top_y), (bracket_x, chin_y)], 
+              fill="blue", width=4)
     
     # Draw horizontal ticks at top and bottom of head
-    draw.line([(bracket_x-10, top_y), (bracket_x+10, top_y)], fill="blue", width=2)
-    draw.line([(bracket_x-10, chin_y), (bracket_x+10, chin_y)], fill="blue", width=2)
+    draw.line([(bracket_x-15, top_y), (bracket_x+15, top_y)], 
+              fill="blue", width=3)
+    draw.line([(bracket_x-15, chin_y), (bracket_x+15, chin_y)], 
+              fill="blue", width=3)
     
-    # Add head height labels
-    draw.text((bracket_x+15, top_y - 15), "Head Top", fill="blue")
-    draw.text((bracket_x+15, chin_y - 15), "Chin", fill="blue")
+    # Add head height labels with actual percentage
+    draw.text((bracket_x+20, top_y - 15), f"Top", fill="blue")
+    draw.text((bracket_x+20, chin_y - 15), f"Chin", fill="blue")
+    
+    # Draw target head height range for reference (faint)
+    target_min_y = (h - int(h * HEAD_MAX_RATIO)) // 2
+    target_max_y = target_min_y + int(h * HEAD_MAX_RATIO)
+    target_50_y = target_min_y + int(h * HEAD_MIN_RATIO)
+    
+    # Draw faint reference lines
+    draw.line([(bracket_x-25, target_min_y), (bracket_x-5, target_min_y)], 
+              fill="lightblue", width=2)
+    draw.line([(bracket_x-25, target_max_y), (bracket_x-5, target_max_y)], 
+              fill="lightblue", width=2)
+    draw.line([(bracket_x-25, target_50_y), (bracket_x-5, target_50_y)], 
+              fill="lightblue", width=2)
+    
+    # Add reference labels
+    draw.text((10, target_min_y - 10), "69%", fill="lightblue")
+    draw.text((10, target_50_y - 10), "50%", fill="lightblue")
     
     # Display actual head height percentage
-    head_status_color = "green" if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO else "red"
-    draw.text((bracket_x-120, (top_y + chin_y)//2 - 30), 
-              f"Head: {head_percentage}%", fill=head_status_color, stroke_width=1, stroke_fill="white")
-    draw.text((bracket_x-120, (top_y + chin_y)//2 - 10), 
-              "Req: 50-69%", fill="blue", stroke_width=1, stroke_fill="white")
+    status_color = "green" if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO else "red"
+    draw.text((bracket_x-100, (top_y + chin_y)//2 - 30), 
+              f"HEAD HEIGHT: {head_percentage}%", fill=status_color)
+    draw.text((bracket_x-100, (top_y + chin_y)//2 - 10), 
+              "REQUIRED: 50-69%", fill="blue")
     
-    # Draw eye line bracket on the RIGHT side
-    eye_bracket_x = w - 30
+    if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO:
+        draw.text((bracket_x-100, (top_y + chin_y)//2 + 10), 
+                  "✓ WITHIN RANGE", fill="green")
+    else:
+        draw.text((bracket_x-100, (top_y + chin_y)//2 + 10), 
+                  "✗ OUT OF RANGE", fill="red")
     
-    # Draw eye line area (56-69% from bottom)
-    eye_min_y = h - int(h * EYE_MAX_RATIO)  # 69% from bottom (31% from top)
-    eye_max_y = h - int(h * EYE_MIN_RATIO)  # 56% from bottom (44% from top)
+    # Draw eye line area
+    draw.rectangle([(w-150, eye_max_y), (w, eye_min_y)], outline="green", width=2)
+    draw.line([(w-150, (eye_min_y + eye_max_y)//2), (w, (eye_min_y + eye_max_y)//2)], 
+              fill="green", width=2)
     
-    # Draw the eye position bracket
-    draw.line([(eye_bracket_x, eye_min_y), (eye_bracket_x, eye_max_y)], fill="green", width=4)
-    draw.line([(eye_bracket_x-10, eye_min_y), (eye_bracket_x+10, eye_min_y)], fill="green", width=2)
-    draw.line([(eye_bracket_x-10, eye_max_y), (eye_bracket_x+10, eye_max_y)], fill="green", width=2)
+    # Calculate actual eye position percentage
+    actual_eye_ratio = (h - eye_y) / h
+    eye_percentage = int(actual_eye_ratio * 100)
+    
+    # Eye line labels with actual position
+    eye_status_color = "green" if EYE_MIN_RATIO <= actual_eye_ratio <= EYE_MAX_RATIO else "red"
+    draw.text((w-140, eye_min_y - 25), f"EYE LINE: {eye_percentage}%", fill=eye_status_color)
+    draw.text((w-140, eye_max_y + 5), "REQUIRED: 56-69%", fill="green")
     
     # Mark actual eye position
-    draw.line([(eye_bracket_x-15, eye_y), (eye_bracket_x+15, eye_y)], fill="darkgreen", width=3)
+    draw.line([(w-160, eye_y), (w-140, eye_y)], fill="darkgreen", width=3)
     
-    # Add eye position labels
-    eye_status_color = "green" if EYE_MIN_RATIO <= actual_eye_ratio <= EYE_MAX_RATIO else "red"
-    draw.text((eye_bracket_x-100, (eye_min_y + eye_max_y)//2 - 30), 
-              f"Eyes: {eye_percentage}%", fill=eye_status_color, stroke_width=1, stroke_fill="white")
-    draw.text((eye_bracket_x-100, (eye_min_y + eye_max_y)//2 - 10), 
-              "Req: 56-69%", fill="green", stroke_width=1, stroke_fill="white")
-    
-    # Add reference text
-    draw.text((10, 10), "DV Lottery Photo Template", fill="black", stroke_width=1, stroke_fill="white")
-    draw.text((10, 30), f"Size: {w}x{h} px", fill="black")
+    # Draw actual head boundaries (faint lines across image)
+    draw.line([(0, top_y), (w, top_y)], fill="lightblue", width=1)
+    draw.line([(0, chin_y), (w, chin_y)], fill="lightblue", width=1)
+    draw.line([(0, eye_y), (w, eye_y)], fill="lightgreen", width=1)
     
     return img, actual_head_ratio, actual_eye_ratio
 
 # ---------------------- STREAMLIT UI ----------------------
 uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG/PNG)", type=["jpg", "jpeg", "png"])
 
-# Initialize session state
-if 'current_image' not in st.session_state:
-    st.session_state.current_image = None
-if 'current_head_info' not in st.session_state:
-    st.session_state.current_head_info = None
-if 'current_bg_removed' not in st.session_state:
-    st.session_state.current_bg_removed = None
-if 'fix_count' not in st.session_state:
-    st.session_state.fix_count = 0
-if 'show_fixed_preview' not in st.session_state:
-    st.session_state.show_fixed_preview = False
-
 if uploaded_file:
     try:
-        # Read the uploaded file
         img_bytes = uploaded_file.read()
         orig = Image.open(io.BytesIO(img_bytes)).convert("RGB")
 
@@ -554,49 +528,30 @@ if uploaded_file:
         with col2:
             st.subheader("✅ DV Compliant Photo")
             
-            # Process image if not already processed or if fix was requested
-            if (st.session_state.current_image is None or 
-                st.session_state.show_fixed_preview or 
-                st.session_state.fix_count > 0):
+            # Perform all checks
+            with st.spinner("Running AI quality checks..."):
+                # Convert to CV for checks
+                orig_cv = cv2.cvtColor(np.array(orig), cv2.COLOR_RGB2BGR)
                 
-                # Perform all checks
-                with st.spinner("Running AI quality checks..."):
-                    orig_cv = cv2.cvtColor(np.array(orig), cv2.COLOR_RGB2BGR)
-                    
-                    checks = {
-                        "Face is recognized": check_face_recognized(orig_cv),
-                        "Only one face is allowed": check_single_face(orig_cv),
-                        "Minimum dimension": check_minimum_dimensions(orig),
-                        "Correct photo proportions": check_photo_proportions(orig),
-                        "Can remove background": check_background_removal(orig),
-                        "No red eyes": check_red_eyes(orig_cv)
-                    }
-                
-                # Process image
-                with st.spinner("Removing background..."):
-                    bg_removed = remove_background(orig)
-                    st.session_state.current_bg_removed = bg_removed
-                
-                with st.spinner("Auto-adjusting to DV specifications..."):
-                    # Use force correction if fix was requested
-                    force_correction = st.session_state.fix_count > 0
-                    processed, head_info = auto_adjust_dv_photo(bg_removed, force_correction)
-                    
-                    st.session_state.current_image = processed
-                    st.session_state.current_head_info = head_info
-                    st.session_state.show_fixed_preview = False
+                # Run all checks
+                checks = {
+                    "Face is recognized": check_face_recognized(orig_cv),
+                    "Only one face is allowed": check_single_face(orig_cv),
+                    "Minimum dimension": check_minimum_dimensions(orig),
+                    "Correct photo proportions": check_photo_proportions(orig),
+                    "Can remove background": check_background_removal(orig),
+                    "No red eyes": check_red_eyes(orig_cv)
+                }
             
-            # Draw guidelines and display
-            final_preview, actual_head_ratio, actual_eye_ratio = draw_guidelines(
-                st.session_state.current_image.copy(), st.session_state.current_head_info
-            )
+            # Process image
+            with st.spinner("Removing background with advanced processing..."):
+                bg_removed = remove_background(orig)
             
-            # Show appropriate caption based on fix status
-            caption = f"DV Compliance Preview: {st.session_state.current_image.size}"
-            if st.session_state.fix_count > 0:
-                caption += f" (Fixed {st.session_state.fix_count} time(s))"
+            with st.spinner("Auto-adjusting to DV specifications..."):
+                processed, head_info = auto_adjust_dv_photo(bg_removed)
             
-            st.image(final_preview, caption=caption)
+            final_preview, actual_head_ratio, actual_eye_ratio = draw_guidelines(processed.copy(), head_info)
+            st.image(final_preview, caption=f"DV Compliance Preview: {processed.size}")
             
             # Display measurements
             col_meas1, col_meas2 = st.columns(2)
@@ -610,27 +565,9 @@ if uploaded_file:
                 st.metric("Eye Position", f"{int(actual_eye_ratio * 100)}%", 
                          delta=eye_status, delta_color="normal" if "WITHIN" in eye_status else "off")
             
-            # Show Fix Photo button if measurements are out of range
-            needs_fix = (actual_head_ratio < HEAD_MIN_RATIO or actual_head_ratio > HEAD_MAX_RATIO or 
-                        actual_eye_ratio < EYE_MIN_RATIO or actual_eye_ratio > EYE_MAX_RATIO)
-            
-            if needs_fix:
-                st.warning("⚠️ Some measurements are out of range. Click the button below to automatically fix them.")
-                
-                if st.button("🛠️ Fix Photo Measurements", type="primary", use_container_width=True):
-                    st.session_state.fix_count += 1
-                    st.session_state.show_fixed_preview = True
-                    st.rerun()
-            else:
-                st.success("✅ All measurements are within the required range!")
-                
-                # Show success message if fixes were applied
-                if st.session_state.fix_count > 0:
-                    st.balloons()
-                    st.success(f"🎉 Photo successfully fixed! All measurements are now within range.")
-            
             # Display success message and checklist
-            st.success("🎉 **Photo processed successfully**")
+            st.success("🎉 **Initial check passed**")
+            st.info("Your photo passed the initial AI check process and will be also verified by our expert. You can now continue your order.")
             
             # Display checklist
             st.subheader("✅ Quality Checklist")
@@ -660,15 +597,14 @@ if uploaded_file:
                 all_passed = False
             
             if all_passed and head_check_passed and eye_check_passed:
-                if st.session_state.fix_count == 0:
-                    st.balloons()
-                    st.success("🎉 All checks passed! Your photo is ready for DV Lottery submission.")
+                st.balloons()
+                st.success("🎉 All checks passed! Your photo is ready for DV Lottery submission.")
             else:
                 st.warning("⚠️ Some checks didn't pass perfectly. You can still download the photo, but consider retaking for best results.")
             
-            # Download button - always show current processed image
+            # Download button
             buf = io.BytesIO()
-            st.session_state.current_image.save(buf, format="JPEG", quality=95)
+            processed.save(buf, format="JPEG", quality=98)
             buf.seek(0)
             st.download_button(
                 "⬇️ Download DV Photo",
@@ -686,27 +622,24 @@ if uploaded_file:
         st.write("- Face the camera directly with neutral expression")
         st.write("- Use plain, contrasting background for best removal")
 else:
-    # Reset session state when no file is uploaded
-    st.session_state.current_image = None
-    st.session_state.current_head_info = None
-    st.session_state.current_bg_removed = None
-    st.session_state.fix_count = 0
-    st.session_state.show_fixed_preview = False
-    
     # Show instructions when no file is uploaded
     st.info("👆 **Upload a photo to get started**")
     st.write("""
-    ### 📋 DV Lottery Photo Requirements:
-    - **Head height**: 50% to 69% of image height
-    - **Eye position**: 56% to 69% from bottom  
-    - **Square aspect ratio** (1:1)
-    - **White background**
-    - **Size**: 600x600 to 1200x1200 pixels
-    - **Single person**, front-facing, neutral expression
+    ### 📋 What we check for DV Lottery compliance:
     
-    ### 🛠️ Auto-Fix Feature:
-    - If measurements are out of range, click "Fix Photo Measurements"
-    - The AI will automatically adjust scaling and positioning
-    - Updated preview will be shown immediately
-    - Multiple fixes can be applied if needed
+    - **Face Recognition**: Ensures your face is clearly visible and detectable
+    - **Single Face**: Only one person should be in the photo
+    - **Minimum Dimensions**: Photo must be at least 600x600 pixels
+    - **Correct Proportions**: Photo should have proper aspect ratio
+    - **Background Removal**: Ability to remove and replace background with white
+    - **No Red Eyes**: Checks for red-eye effect in the photo
+    - **Head Height**: Head must be 50-69% of total image height ✓
+    - **Eye Position**: Eyes must be 56-69% from bottom ✓
+    
+    ### 🎯 DV Lottery Photo Requirements:
+    - Head height: 50% to 69% of image height
+    - Eye line: 56% to 69% from bottom
+    - Square aspect ratio (1:1)
+    - White background
+    - Size: 600x600 to 1200x1200 pixels
     """)
