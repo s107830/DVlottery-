@@ -304,8 +304,8 @@ def remove_background_basic(img_pil):
 def remove_background(img_pil):
     return remove_background_advanced(img_pil)
 
-# ---------------------- AUTO ADJUST WITH HEAD DETECTION ----------------------
-def auto_adjust_dv_photo(image_pil):
+# ---------------------- ENHANCED AUTO ADJUST WITH CORRECTION CAPABILITY ----------------------
+def auto_adjust_dv_photo(image_pil, correction_attempt=0):
     try:
         # Convert PIL to OpenCV
         image_rgb = np.array(image_pil)
@@ -323,10 +323,23 @@ def auto_adjust_dv_photo(image_pil):
 
         # Calculate scale factor for optimal head size
         target_head_height = (HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2 * MIN_SIZE
-        scale_factor = target_head_height / head_height
+        
+        # Apply correction logic for subsequent attempts
+        if correction_attempt > 0:
+            # For correction attempts, be more aggressive with scaling
+            if head_height < target_head_height * 0.8:
+                # Head is too small, scale up more aggressively
+                scale_factor = (target_head_height * 1.2) / head_height
+            elif head_height > target_head_height * 1.2:
+                # Head is too large, scale down more aggressively
+                scale_factor = (target_head_height * 0.8) / head_height
+            else:
+                scale_factor = target_head_height / head_height
+        else:
+            scale_factor = target_head_height / head_height
         
         # Apply reasonable scaling limits
-        scale_factor = max(0.4, min(2.5, scale_factor))
+        scale_factor = max(0.3, min(3.0, scale_factor))
         
         new_h = int(original_h * scale_factor)
         new_w = int(original_w * scale_factor)
@@ -346,6 +359,18 @@ def auto_adjust_dv_photo(image_pil):
 
         # Calculate optimal eye position
         target_eye_ratio = (EYE_MIN_RATIO + EYE_MAX_RATIO) / 2
+        
+        # Apply correction for eye position if needed
+        if correction_attempt > 0:
+            # Adjust target eye position based on previous errors
+            current_eye_ratio = eye_y_scaled / new_h
+            if current_eye_ratio < EYE_MIN_RATIO:
+                # Eyes are too high, adjust target lower
+                target_eye_ratio = min(EYE_MAX_RATIO, target_eye_ratio + 0.1)
+            elif current_eye_ratio > EYE_MAX_RATIO:
+                # Eyes are too low, adjust target higher
+                target_eye_ratio = max(EYE_MIN_RATIO, target_eye_ratio - 0.1)
+        
         target_eye_y = canvas_size - int(canvas_size * target_eye_ratio)
         
         # Calculate vertical offset
@@ -357,6 +382,21 @@ def auto_adjust_dv_photo(image_pil):
         
         # Clamp y_offset to keep entire head in frame
         y_offset = max(min_y_offset, min(y_offset, max_y_offset))
+        
+        # Apply additional correction for eye position if still needed
+        if correction_attempt > 0:
+            # Check if we need to adjust further for eye position
+            final_eye_y = eye_y_scaled + y_offset
+            final_eye_ratio = (canvas_size - final_eye_y) / canvas_size
+            
+            if final_eye_ratio < EYE_MIN_RATIO:
+                # Still too high, try to move down more
+                additional_offset = int(canvas_size * (EYE_MIN_RATIO - final_eye_ratio))
+                y_offset = min(max_y_offset, y_offset + additional_offset)
+            elif final_eye_ratio > EYE_MAX_RATIO:
+                # Still too low, try to move up more
+                additional_offset = int(canvas_size * (final_eye_ratio - EYE_MAX_RATIO))
+                y_offset = max(min_y_offset, y_offset - additional_offset)
         
         # Center horizontally
         x_offset = (canvas_size - new_w) // 2
@@ -474,9 +514,9 @@ def draw_guidelines(img, head_info):
     draw.text((10, target_50_y - 10), "50%", fill="lightblue")
     
     # Display actual head height percentage
-    status_color = "green" if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO else "red"
+    head_status_color = "green" if HEAD_MIN_RATIO <= actual_head_ratio <= HEAD_MAX_RATIO else "red"
     draw.text((bracket_x-100, (top_y + chin_y)//2 - 30), 
-              f"HEAD HEIGHT: {head_percentage}%", fill=status_color)
+              f"HEAD HEIGHT: {head_percentage}%", fill=head_status_color)
     draw.text((bracket_x-100, (top_y + chin_y)//2 - 10), 
               "REQUIRED: 50-69%", fill="blue")
     
@@ -511,8 +551,52 @@ def draw_guidelines(img, head_info):
     
     return img, actual_head_ratio, actual_eye_ratio
 
+# ---------------------- FIX PHOTO FUNCTION ----------------------
+def fix_photo_measurements(original_bg_removed, current_head_info, current_eye_ratio):
+    """Apply corrections to fix out-of-range measurements"""
+    
+    # Convert to CV for reprocessing
+    image_rgb = np.array(original_bg_removed)
+    
+    try:
+        # Get face landmarks
+        landmarks = get_face_landmarks(image_rgb)
+        original_h, original_w = image_rgb.shape[:2]
+        top_y, chin_y, eye_y = get_head_eye_positions(landmarks, original_h, original_w)
+        
+        # Calculate what went wrong and apply corrections
+        head_height = chin_y - top_y
+        
+        # Determine correction strategy based on current issues
+        if current_eye_ratio < EYE_MIN_RATIO:
+            # Eyes are too high (low percentage from bottom) - need to move image down
+            # This means we need to scale differently and reposition
+            correction_attempt = 1
+        elif current_eye_ratio > EYE_MAX_RATIO:
+            # Eyes are too low (high percentage from bottom) - need to move image up
+            correction_attempt = 1
+        else:
+            correction_attempt = 1  # Default correction
+            
+        # Use the enhanced auto_adjust with correction logic
+        fixed_img, fixed_head_info = auto_adjust_dv_photo(original_bg_removed, correction_attempt)
+        
+        return fixed_img, fixed_head_info
+        
+    except Exception as e:
+        st.error(f"Fix failed: {e}")
+        return original_bg_removed, current_head_info
+
 # ---------------------- STREAMLIT UI ----------------------
 uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG/PNG)", type=["jpg", "jpeg", "png"])
+
+# Initialize session state for tracking fixes
+if 'correction_count' not in st.session_state:
+    st.session_state.correction_count = 0
+if 'fixed_image' not in st.session_state:
+    st.session_state.fixed_image = None
+if 'fixed_head_info' not in st.session_state:
+    st.session_state.fixed_head_info = None
 
 if uploaded_file:
     try:
@@ -548,7 +632,14 @@ if uploaded_file:
                 bg_removed = remove_background(orig)
             
             with st.spinner("Auto-adjusting to DV specifications..."):
-                processed, head_info = auto_adjust_dv_photo(bg_removed)
+                if st.session_state.fixed_image is not None and st.session_state.correction_count > 0:
+                    # Use the fixed image if available
+                    processed = st.session_state.fixed_image
+                    head_info = st.session_state.fixed_head_info
+                else:
+                    # First time processing
+                    processed, head_info = auto_adjust_dv_photo(bg_removed)
+                    st.session_state.original_bg_removed = bg_removed
             
             final_preview, actual_head_ratio, actual_eye_ratio = draw_guidelines(processed.copy(), head_info)
             st.image(final_preview, caption=f"DV Compliance Preview: {processed.size}")
@@ -564,6 +655,28 @@ if uploaded_file:
                 eye_status = "✅ WITHIN RANGE" if EYE_MIN_RATIO <= actual_eye_ratio <= EYE_MAX_RATIO else "❌ OUT OF RANGE"
                 st.metric("Eye Position", f"{int(actual_eye_ratio * 100)}%", 
                          delta=eye_status, delta_color="normal" if "WITHIN" in eye_status else "off")
+            
+            # Show Fix Photo button if measurements are out of range
+            if (actual_head_ratio < HEAD_MIN_RATIO or actual_head_ratio > HEAD_MAX_RATIO or 
+                actual_eye_ratio < EYE_MIN_RATIO or actual_eye_ratio > EYE_MAX_RATIO):
+                
+                st.warning("⚠️ Some measurements are out of range. Click the button below to automatically fix them.")
+                
+                if st.button("🛠️ Fix Photo Measurements", type="primary", use_container_width=True):
+                    with st.spinner("Applying corrections to fix measurements..."):
+                        fixed_img, fixed_head_info = fix_photo_measurements(
+                            st.session_state.original_bg_removed, 
+                            head_info, 
+                            actual_eye_ratio
+                        )
+                        
+                        # Store fixed results in session state
+                        st.session_state.fixed_image = fixed_img
+                        st.session_state.fixed_head_info = fixed_head_info
+                        st.session_state.correction_count += 1
+                        
+                        # Rerun to update display
+                        st.rerun()
             
             # Display success message and checklist
             st.success("🎉 **Initial check passed**")
@@ -596,6 +709,10 @@ if uploaded_file:
                 st.error(f"✗ **Eye position incorrect** - *{int(actual_eye_ratio * 100)}% from bottom (required: 56-69%)*")
                 all_passed = False
             
+            # Show correction count if any fixes were applied
+            if st.session_state.correction_count > 0:
+                st.info(f"🛠️ Photo has been automatically corrected {st.session_state.correction_count} time(s)")
+            
             if all_passed and head_check_passed and eye_check_passed:
                 st.balloons()
                 st.success("🎉 All checks passed! Your photo is ready for DV Lottery submission.")
@@ -622,6 +739,11 @@ if uploaded_file:
         st.write("- Face the camera directly with neutral expression")
         st.write("- Use plain, contrasting background for best removal")
 else:
+    # Reset session state when no file is uploaded
+    st.session_state.correction_count = 0
+    st.session_state.fixed_image = None
+    st.session_state.fixed_head_info = None
+    
     # Show instructions when no file is uploaded
     st.info("👆 **Upload a photo to get started**")
     st.write("""
@@ -642,4 +764,9 @@ else:
     - Square aspect ratio (1:1)
     - White background
     - Size: 600x600 to 1200x1200 pixels
+    
+    ### 🛠️ Auto-Fix Feature:
+    - If measurements are out of range, click the "Fix Photo" button
+    - The AI will automatically adjust scaling and positioning
+    - Checklist will be rerun to show updated results
     """)
