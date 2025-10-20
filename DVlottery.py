@@ -44,8 +44,8 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         right_eye_y = int(landmarks.landmark[263].y * img_h)
         eye_y = (left_eye_y + right_eye_y) // 2
         
-        # Add buffer for hair/head top
-        hair_buffer = int((chin_y - top_y) * 0.25)
+        # Add buffer for hair/head top - increased buffer to ensure full head is included
+        hair_buffer = int((chin_y - top_y) * 0.4)  # Increased from 0.25 to 0.4
         top_y = max(0, top_y - hair_buffer)
         
         return top_y, chin_y, eye_y
@@ -124,7 +124,7 @@ def process_dv_photo_initial(img_pil):
         return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE}
 
 def process_dv_photo_adjusted(img_pil):
-    """Processing WITH auto-adjustment for head to chin ratio"""
+    """Processing WITH auto-adjustment for head to chin ratio - FIXED VERSION"""
     try:
         cv_img = np.array(img_pil)
         if len(cv_img.shape) == 2:
@@ -137,12 +137,17 @@ def process_dv_photo_adjusted(img_pil):
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
         head_height = chin_y - top_y
 
-        # Scale based on DV required head ratio
-        scale_factor = (MIN_SIZE * 0.6) / head_height
-        scale_factor = np.clip(scale_factor, 0.5, 2.0)
-        resized = cv2.resize(cv_img, (int(w*scale_factor), int(h*scale_factor)), interpolation=cv2.INTER_LANCZOS4)
+        # Calculate scale factor to make head height 60% of canvas (optimal)
+        target_head_height = MIN_SIZE * 0.6
+        scale_factor = target_head_height / head_height
+        scale_factor = np.clip(scale_factor, 0.3, 3.0)  # Wider range to handle various head sizes
+        
+        # Apply scaling
+        new_w = int(w * scale_factor)
+        new_h = int(h * scale_factor)
+        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
-        new_h, new_w = resized.shape[:2]
+        # Create white canvas
         canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
 
         # Recalculate positions after scaling
@@ -150,27 +155,57 @@ def process_dv_photo_adjusted(img_pil):
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
         head_height = chin_y - top_y
 
-        # Calculate placement to meet eye position requirements
-        target_eye_y = MIN_SIZE - int(MIN_SIZE * ((EYE_MIN_RATIO + EYE_MAX_RATIO) / 2))
+        # Calculate optimal eye position (middle of required range)
+        target_eye_min = MIN_SIZE - int(MIN_SIZE * EYE_MAX_RATIO)  # 56% from top
+        target_eye_max = MIN_SIZE - int(MIN_SIZE * EYE_MIN_RATIO)  # 69% from top
+        target_eye_y = (target_eye_min + target_eye_max) // 2
+
+        # Calculate y_offset to position eyes at target
         y_offset = target_eye_y - eye_y
+        
+        # Ensure the entire head is visible - CRITICAL FIX
+        # Check if top of head would be cut off
+        if top_y + y_offset < 0:
+            # Adjust to show full head by moving image down
+            y_offset = -top_y + 10  # Add small margin
+        
+        # Check if bottom would be cut off
+        if chin_y + y_offset > MIN_SIZE:
+            # Adjust to show full chin by moving image up
+            y_offset = MIN_SIZE - chin_y - 10  # Add small margin
+
+        # Center horizontally
         x_offset = (MIN_SIZE - new_w) // 2
 
-        # Place the image on canvas
-        y_start = max(0, y_offset)
-        y_end = min(MIN_SIZE, y_offset + new_h)
-        x_start = max(0, x_offset)
-        x_end = min(MIN_SIZE, x_offset + new_w)
-        y_src_start = max(0, -y_offset)
-        y_src_end = min(new_h, MIN_SIZE - y_offset)
-        x_src_start = max(0, -x_offset)
-        x_src_end = min(new_w, MIN_SIZE - x_offset)
-
-        if y_start < y_end and x_start < x_end and y_src_start < y_src_end and x_src_start < x_src_end:
-            canvas[y_start:y_end, x_start:x_end] = resized[y_src_start:y_src_end, x_src_start:x_src_end]
-        else:
-            st.error("Image placement calculation error")
-            return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE}
+        # Calculate source and destination regions with bounds checking
+        y_start_dst = max(0, y_offset)
+        y_end_dst = min(MIN_SIZE, y_offset + new_h)
+        x_start_dst = max(0, x_offset)
+        x_end_dst = min(MIN_SIZE, x_offset + new_w)
         
+        y_start_src = max(0, -y_offset)
+        y_end_src = min(new_h, MIN_SIZE - y_offset)
+        x_start_src = max(0, -x_offset)
+        x_end_src = min(new_w, MIN_SIZE - x_offset)
+
+        # Ensure valid regions
+        if (y_start_dst < y_end_dst and x_start_dst < x_end_dst and 
+            y_start_src < y_end_src and x_start_src < x_end_src):
+            
+            canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
+                resized[y_start_src:y_end_src, x_start_src:x_end_src]
+        else:
+            st.error("Image placement calculation error - falling back to centered placement")
+            # Fallback: center the image
+            y_offset = (MIN_SIZE - new_h) // 2
+            x_offset = (MIN_SIZE - new_w) // 2
+            if y_offset >= 0 and x_offset >= 0 and y_offset + new_h <= MIN_SIZE and x_offset + new_w <= MIN_SIZE:
+                canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+            else:
+                # Final fallback: resize to fit
+                resized_fallback = cv2.resize(cv_img, (MIN_SIZE, MIN_SIZE), interpolation=cv2.INTER_LANCZOS4)
+                canvas = resized_fallback
+
         # Get final positions on the canvas
         final_top_y = top_y + y_offset
         final_chin_y = chin_y + y_offset
