@@ -7,7 +7,7 @@ from rembg import remove
 
 # ---------------------- STREAMLIT SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("📸 DV Lottery Photo Editor — Auto Crop, White Background & Official Size Guide")
+st.title("📸 DV Lottery Photo Editor — Fully Auto-Adjusted DV Photo")
 
 # ---------------------- CONSTANTS ----------------------
 FINAL_PX = 600            # 2x2 inch at 300 DPI
@@ -29,6 +29,7 @@ def remove_background(img_pil):
     return composite.convert("RGB")
 
 def detect_face(cv_img):
+    """Detect largest face in an image using Haar Cascade."""
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
     faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
@@ -37,31 +38,50 @@ def detect_face(cv_img):
     x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
     return x, y, w, h
 
-def crop_and_resize(image_pil):
+def auto_scale_and_center(image_pil):
+    """Automatically scale and center the head to fit DV guidelines."""
     image_rgb = np.array(image_pil)
     image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
     x, y, w, h = detect_face(image_bgr)
 
-    # Crop with padding
-    height, width = image_bgr.shape[:2]
-    top = max(0, y - int(0.45 * h))
-    bottom = min(height, y + h + int(0.35 * h))
-    left = max(0, x - int(0.25 * w))
-    right = min(width, x + w + int(0.25 * w))
-    cropped = image_bgr[top:bottom, left:right]
+    # Calculate desired head height in pixels
+    target_head_min = int(FINAL_PX * HEAD_MIN_RATIO)
+    target_head_max = int(FINAL_PX * HEAD_MAX_RATIO)
+    target_head_height = (target_head_min + target_head_max) // 2
 
-    # Pad to square
-    c_h, c_w = cropped.shape[:2]
-    diff = abs(c_h - c_w)
-    if c_h > c_w:
-        pad = (diff // 2, diff - diff // 2)
-        cropped = cv2.copyMakeBorder(cropped, 0, 0, pad[0], pad[1], cv2.BORDER_CONSTANT, value=BG_COLOR)
-    elif c_w > c_h:
-        pad = (diff // 2, diff - diff // 2)
-        cropped = cv2.copyMakeBorder(cropped, pad[0], pad[1], 0, 0, cv2.BORDER_CONSTANT, value=BG_COLOR)
+    # Scale factor to make detected head fit target height
+    scale_factor = target_head_height / h
+    new_w = int(image_bgr.shape[1] * scale_factor)
+    new_h = int(image_bgr.shape[0] * scale_factor)
+    resized_img = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    resized = cv2.resize(cropped, (FINAL_PX, FINAL_PX), interpolation=cv2.INTER_AREA)
-    return Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
+    # Recalculate face position after scaling
+    x_scaled = int(x * scale_factor)
+    y_scaled = int(y * scale_factor)
+    w_scaled = int(w * scale_factor)
+    h_scaled = int(h * scale_factor)
+
+    # Center the head vertically in the final 600x600 canvas
+    head_center_y = y_scaled + h_scaled // 2
+    canvas = np.full((FINAL_PX, FINAL_PX, 3), BG_COLOR, dtype=np.uint8)
+    top = FINAL_PX // 2 - head_center_y
+    left = FINAL_PX // 2 - (x_scaled + w_scaled // 2)
+
+    # Compute placement coordinates on canvas
+    y1 = max(0, top)
+    y2 = min(FINAL_PX, top + resized_img.shape[0])
+    x1 = max(0, left)
+    x2 = min(FINAL_PX, left + resized_img.shape[1])
+
+    # Compute corresponding coordinates from resized image
+    src_y1 = max(0, -top)
+    src_y2 = src_y1 + (y2 - y1)
+    src_x1 = max(0, -left)
+    src_x2 = src_x1 + (x2 - x1)
+
+    canvas[y1:y2, x1:x2] = resized_img[src_y1:src_y2, src_x1:src_x2]
+
+    return Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
 
 def draw_guidelines(img):
     draw = ImageDraw.Draw(img)
@@ -105,18 +125,17 @@ if uploaded_file:
         if orig.mode != "RGB":
             orig = orig.convert("RGB")
 
-        # Two equal columns
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("📤 Original Photo")
-            st.image(orig, caption="Original")  # keep natural size for perfect alignment
+            st.image(orig, caption="Original")
 
         with col2:
             st.subheader("✅ Processed (DV Compliant)")
             bg_removed = remove_background(orig)
-            processed = crop_and_resize(bg_removed)
+            processed = auto_scale_and_center(bg_removed)
             final_preview = draw_guidelines(processed.copy())
-            st.image(final_preview, caption="DV Compliance Preview")  # same size, aligned
+            st.image(final_preview, caption="DV Compliance Preview")
 
             # Download button
             buf = io.BytesIO()
