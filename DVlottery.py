@@ -22,8 +22,13 @@ mp_face_mesh = mp.solutions.face_mesh
 # ---------------------- HELPERS ----------------------
 def get_face_landmarks(cv_img):
     try:
-        with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1,
-                                   refine_landmarks=True, min_detection_confidence=0.5) as fm:
+        with mp_face_mesh.FaceMesh(
+            static_image_mode=True, 
+            max_num_faces=1,
+            refine_landmarks=True, 
+            min_detection_confidence=0.3,  # Lower confidence for babies
+            min_tracking_confidence=0.3
+        ) as fm:
             img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
             results = fm.process(img_rgb)
             if not results.multi_face_landmarks:
@@ -44,8 +49,8 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         right_eye_y = int(landmarks.landmark[263].y * img_h)
         eye_y = (left_eye_y + right_eye_y) // 2
         
-        # Add buffer for hair/head top
-        hair_buffer = int((chin_y - top_y) * 0.4)
+        # Add buffer for hair/head top - larger buffer for babies
+        hair_buffer = int((chin_y - top_y) * 0.5)  # Increased for babies
         top_y = max(0, top_y - hair_buffer)
         
         return top_y, chin_y, eye_y
@@ -63,6 +68,31 @@ def remove_background(img_pil):
     except Exception as e:
         st.warning(f"Background removal failed: {str(e)}. Using original image.")
         return img_pil
+
+def is_likely_baby_photo(cv_img, landmarks):
+    """Detect if photo is likely a baby based on facial proportions"""
+    try:
+        h, w = cv_img.shape[:2]
+        
+        # Get facial features
+        left_eye = landmarks.landmark[33]
+        right_eye = landmarks.landmark[263]
+        nose_tip = landmarks.landmark[1]
+        chin = landmarks.landmark[152]
+        
+        # Calculate proportions typical of babies
+        eye_distance = abs(left_eye.x - right_eye.x) * w
+        face_height = (chin.y - landmarks.landmark[10].y) * h
+        
+        # Babies typically have larger eyes relative to face
+        eye_to_face_ratio = eye_distance / face_height
+        
+        # Babies have proportionally larger foreheads
+        forehead_to_face_ratio = (landmarks.landmark[10].y - landmarks.landmark[151].y) / face_height
+        
+        return eye_to_face_ratio > 0.3 or forehead_to_face_ratio > 0.4
+    except:
+        return False
 
 # ---------------------- CORE PROCESSING ----------------------
 def process_dv_photo_initial(img_pil):
@@ -106,7 +136,8 @@ def process_dv_photo_initial(img_pil):
                 "chin_y": final_chin_y,
                 "eye_y": final_eye_y,
                 "head_height": head_height * scale_factor,
-                "canvas_size": MIN_SIZE
+                "canvas_size": MIN_SIZE,
+                "is_baby": is_likely_baby_photo(cv_img, landmarks)
             }
         except:
             # If face detection fails, use default values
@@ -115,16 +146,17 @@ def process_dv_photo_initial(img_pil):
                 "chin_y": MIN_SIZE * 3 // 4,
                 "eye_y": MIN_SIZE // 2,
                 "head_height": MIN_SIZE // 2,
-                "canvas_size": MIN_SIZE
+                "canvas_size": MIN_SIZE,
+                "is_baby": False
             }
         
         return result, head_info
     except Exception as e:
         st.error(f"Initial photo processing error: {str(e)}")
-        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE}
+        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE, "is_baby": False}
 
 def process_dv_photo_adjusted(img_pil):
-    """Processing WITH auto-adjustment for head to chin ratio - FIXED VERSION"""
+    """Processing WITH auto-adjustment for head to chin ratio - BABY FRIENDLY"""
     try:
         cv_img = np.array(img_pil)
         if len(cv_img.shape) == 2:
@@ -136,11 +168,21 @@ def process_dv_photo_adjusted(img_pil):
         landmarks = get_face_landmarks(cv_img)
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
         head_height = chin_y - top_y
+        
+        # Detect if it's a baby photo
+        is_baby = is_likely_baby_photo(cv_img, landmarks)
 
-        # Calculate scale factor to make head height optimal (around 60% of canvas)
-        target_head_height = MIN_SIZE * 0.6
-        scale_factor = target_head_height / head_height
-        scale_factor = np.clip(scale_factor, 0.3, 3.0)
+        # Different scaling for babies vs adults
+        if is_baby:
+            # For babies, use more conservative scaling to avoid cutting head
+            target_head_height = MIN_SIZE * 0.55  # Slightly smaller target
+            scale_factor = target_head_height / head_height
+            scale_factor = np.clip(scale_factor, 0.4, 2.5)  # Tighter bounds for babies
+        else:
+            # Normal scaling for adults
+            target_head_height = MIN_SIZE * 0.6
+            scale_factor = target_head_height / head_height
+            scale_factor = np.clip(scale_factor, 0.3, 3.0)
         
         # Apply scaling
         new_w = int(w * scale_factor)
@@ -155,29 +197,35 @@ def process_dv_photo_adjusted(img_pil):
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
         head_height = chin_y - top_y
 
-        # Calculate optimal eye position (middle of required range)
-        target_eye_min = MIN_SIZE - int(MIN_SIZE * EYE_MAX_RATIO)  # 56% from top
-        target_eye_max = MIN_SIZE - int(MIN_SIZE * EYE_MIN_RATIO)  # 69% from top
+        # Calculate optimal eye position
+        target_eye_min = MIN_SIZE - int(MIN_SIZE * EYE_MAX_RATIO)
+        target_eye_max = MIN_SIZE - int(MIN_SIZE * EYE_MIN_RATIO)
         target_eye_y = (target_eye_min + target_eye_max) // 2
 
         # Calculate y_offset to position eyes at target
         y_offset = target_eye_y - eye_y
         
-        # CRITICAL FIX: Ensure the entire head is visible
+        # EXTRA PROTECTION FOR BABIES: Ensure the entire head is visible
+        if is_baby:
+            # For babies, be extra careful about head top
+            head_top_margin = 20  # Larger margin for babies
+            head_bottom_margin = 15
+        else:
+            head_top_margin = 10
+            head_bottom_margin = 10
+        
         # Check if top of head would be cut off
-        if top_y + y_offset < 0:
-            # If head top would be cut off, adjust to show full head
-            y_offset = -top_y + 10  # Small margin from top
+        if top_y + y_offset < head_top_margin:
+            y_offset = -top_y + head_top_margin
         
         # Check if bottom would be cut off
-        if chin_y + y_offset > MIN_SIZE - 10:
-            # If chin would be cut off, adjust to show full chin
-            y_offset = MIN_SIZE - chin_y - 10  # Small margin from bottom
+        if chin_y + y_offset > MIN_SIZE - head_bottom_margin:
+            y_offset = MIN_SIZE - chin_y - head_bottom_margin
 
         # Center horizontally
         x_offset = (MIN_SIZE - new_w) // 2
 
-        # Calculate source and destination regions with bounds checking
+        # Calculate source and destination regions
         y_start_dst = max(0, y_offset)
         y_end_dst = min(MIN_SIZE, y_offset + new_h)
         x_start_dst = max(0, x_offset)
@@ -214,12 +262,13 @@ def process_dv_photo_adjusted(img_pil):
             "chin_y": final_chin_y,
             "eye_y": final_eye_y,
             "head_height": head_height,
-            "canvas_size": MIN_SIZE
+            "canvas_size": MIN_SIZE,
+            "is_baby": is_baby
         }
         return result, head_info
     except Exception as e:
         st.error(f"Photo adjustment error: {str(e)}")
-        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE}
+        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE, "is_baby": False}
 
 # ---------------------- DRAW LINES ----------------------
 def draw_guidelines(img, head_info):
@@ -229,6 +278,7 @@ def draw_guidelines(img, head_info):
         cx = w // 2
         top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
         head_height, canvas_size = head_info["head_height"], head_info["canvas_size"]
+        is_baby = head_info.get("is_baby", False)
 
         head_ratio = head_height / canvas_size
         eye_ratio = (canvas_size - eye_y) / canvas_size
@@ -254,28 +304,30 @@ def draw_guidelines(img, head_info):
         draw.text((cx + 10, head_text_y), f"Req: {int(HEAD_MIN_RATIO*100)}-{int(HEAD_MAX_RATIO*100)}%", fill="blue")
 
         # Draw eye position guidelines
-        eye_min_y = h - int(h * EYE_MAX_RATIO)  # 56% from top
-        eye_max_y = h - int(h * EYE_MIN_RATIO)  # 69% from top
+        eye_min_y = h - int(h * EYE_MAX_RATIO)
+        eye_max_y = h - int(h * EYE_MIN_RATIO)
         
         # Eye range guidelines (dashed green lines)
         dash_length = 10
-        # Top eye guideline (56%)
         for x in range(0, w, dash_length*2):
             if x + dash_length <= w:
                 draw.line([(x, eye_min_y), (x+dash_length, eye_min_y)], fill="green", width=2)
         draw.text((10, eye_min_y-15), "56%", fill="green")
         
-        # Bottom eye guideline (69%)
         for x in range(0, w, dash_length*2):
             if x + dash_length <= w:
                 draw.line([(x, eye_max_y), (x+dash_length, eye_max_y)], fill="green", width=2)
         draw.text((10, eye_max_y-15), "69%", fill="green")
         
-        # Actual eye position line (solid red/green line)
+        # Actual eye position line
         draw.line([(0, eye_y), (w, eye_y)], fill=eye_color, width=3)
         
         # Eye ratio text
         draw.text((w-150, eye_y-15), f"Eyes: {int(eye_ratio*100)}%", fill=eye_color)
+
+        # Show baby detection info
+        if is_baby:
+            draw.text((10, 10), "👶 Baby Photo Detected", fill="orange")
 
         return img, head_ratio, eye_ratio
     except Exception as e:
@@ -298,7 +350,11 @@ with st.sidebar:
     - **Eye Position**: 56% - 69% from top
     - **Photo Size**: 600×600 pixels
     - **Background**: Plain white
-    - **Format**: JPEG recommended
+    
+    ### 👶 Baby Photos:
+    - Works best with clear front-facing photos
+    - Auto-detects baby facial features
+    - Uses special adjustments for baby proportions
     """)
     
     st.header("⚙️ Settings")
@@ -338,10 +394,15 @@ if uploaded_file:
                 }
             except Exception as e:
                 st.error(f"❌ Error processing image: {str(e)}")
+                st.info("💡 Tip: Try a different photo with clear facial features")
                 st.stop()
 
     # Get data from session state
     data = st.session_state.processed_data
+    
+    # Show baby detection info
+    if data['head_info'].get('is_baby', False):
+        st.info("👶 **Baby photo detected** - Using special adjustments for infant facial proportions")
     
     # Display results
     col1, col2 = st.columns(2)
@@ -428,7 +489,8 @@ if uploaded_file:
                     except Exception as e:
                         st.error(f"❌ Adjustment failed: {str(e)}")
         
-        st.info("💡 **Tip:** Try uploading a different photo if auto-adjustment doesn't work.")
+        if data['head_info'].get('is_baby', False):
+            st.info("👶 **Baby photo tip:** Make sure the baby's face is clearly visible and looking directly at the camera")
 
     # Download Section
     st.subheader("📥 Download Corrected Photo")
@@ -451,7 +513,7 @@ if uploaded_file:
         data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
         st.download_button(
             label="⬇️ Download with Guidelines",
-            data=buf_with_guides.getvalue(),
+            data=b_with_guides.getvalue(),
             file_name="dv_lottery_photo_with_guides.jpg",
             mime="image/jpeg",
             use_container_width=True
@@ -471,6 +533,11 @@ else:
     4. **Press Fix Button** for head-to-chin auto-adjustment
     5. **Download** your ready-to-use DV photo
     
+    ### 👶 Baby Photos Supported!
+    - Special detection for infant facial features
+    - Adjusted proportions for baby photos
+    - Extra head top protection
+    
     **👆 Upload your photo above to get started!**
     """)
     
@@ -482,4 +549,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Automatically ensures your photo meets official requirements*")
+st.markdown("*DV Lottery Photo Editor | Now with better baby photo support*")
