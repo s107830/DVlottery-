@@ -1,97 +1,140 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageOps
 import numpy as np
 import cv2
-from rembg import remove
 import io
+from rembg import remove
 
-st.set_page_config(page_title="📸 DV Lottery Photo Editor — Auto Background, Crop & Guidelines")
+# ---------------------- STREAMLIT SETUP ----------------------
+st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
+st.title("📸 DV Lottery Photo Editor — Auto Crop, White Background & Official Size Guide")
 
-st.title("📸 DV Lottery Photo Editor — Auto Background, Crop & Guidelines")
-st.write("Upload your photo (JPG/JPEG/PNG). The app will remove the background, crop to 2x2 in (600×600 px), and show DV guideline lines.")
+# ---------------------- CONSTANTS ----------------------
+FINAL_PX = 600            # 2x2 inch at 300 DPI
+HEAD_MIN_RATIO = 0.50     # 50% of image height
+HEAD_MAX_RATIO = 0.69     # 69% of image height
+BG_COLOR = (255, 255, 255)
 
-uploaded_file = st.file_uploader("Upload your photo", type=["jpg", "jpeg", "png"])
+# ---------------------- FUNCTIONS ----------------------
 
-# ---- Utility: Draw guidelines ----
-def draw_guidelines(image: Image.Image):
-    draw = ImageDraw.Draw(image)
-    w, h = image.size
+def remove_background(img_pil):
+    """Remove background using rembg and replace with white."""
+    img_byte = io.BytesIO()
+    img_pil.save(img_byte, format="PNG")
+    img_byte = img_byte.getvalue()
+    result = remove(img_byte)
+    fg = Image.open(io.BytesIO(result)).convert("RGBA")
+    white_bg = Image.new("RGBA", fg.size, BG_COLOR + (255,))
+    composite = Image.alpha_composite(white_bg, fg)
+    return composite.convert("RGB")
 
-    # Define DV guideline zones
-    head_top_y = int(h * 0.15)
-    chin_y = int(h * 0.85)
-    eye_y = int(h * 0.55)
-    center_x = w // 2
+def detect_face(cv_img):
+    """Detect largest face in an image using Haar Cascade."""
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(100, 100))
+    if len(faces) == 0:
+        raise Exception("No face detected. Upload a clear, frontal photo.")
+    x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+    return x, y, w, h
 
-    # Line style
-    line_color = (0, 255, 0)
-    text_color = (255, 0, 0)
+def crop_and_resize(image_pil):
+    """Crop around face and resize to DV 2x2 inch ratio."""
+    image_rgb = np.array(image_pil)
+    image_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR)
+    x, y, w, h = detect_face(image_bgr)
 
-    # Horizontal lines
-    draw.line([(0, head_top_y), (w, head_top_y)], fill=line_color, width=2)
-    draw.line([(0, eye_y), (w, eye_y)], fill=line_color, width=2)
-    draw.line([(0, chin_y), (w, chin_y)], fill=line_color, width=2)
-    draw.line([(center_x, 0), (center_x, h)], fill=line_color, width=2)
+    # Crop with padding
+    height, width = image_bgr.shape[:2]
+    top = max(0, y - int(0.45 * h))
+    bottom = min(height, y + h + int(0.35 * h))
+    left = max(0, x - int(0.25 * w))
+    right = min(width, x + w + int(0.25 * w))
+    cropped = image_bgr[top:bottom, left:right]
 
-    # Label text
+    # Pad to square
+    c_h, c_w = cropped.shape[:2]
+    diff = abs(c_h - c_w)
+    if c_h > c_w:
+        pad = (diff // 2, diff - diff // 2)
+        cropped = cv2.copyMakeBorder(cropped, 0, 0, pad[0], pad[1], cv2.BORDER_CONSTANT, value=BG_COLOR)
+    elif c_w > c_h:
+        pad = (diff // 2, diff - diff // 2)
+        cropped = cv2.copyMakeBorder(cropped, pad[0], pad[1], 0, 0, cv2.BORDER_CONSTANT, value=BG_COLOR)
+
+    resized = cv2.resize(cropped, (FINAL_PX, FINAL_PX), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(cv2.cvtColor(resized, cv2.COLOR_BGR2RGB))
+
+def draw_guidelines(img):
+    """Draw DV photo size guides."""
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+
+    # Outer border
+    draw.rectangle([(0, 0), (w-1, h-1)], outline="gray", width=2)
+
+    # Head height guidelines
+    head_min = int(h * (1 - HEAD_MAX_RATIO) / 2)
+    head_max = int(h * (1 - HEAD_MIN_RATIO) / 2)
+    draw.line([(50, head_min), (w-50, head_min)], fill="blue", width=2)
+    draw.line([(50, h - head_min), (w-50, h - head_min)], fill="blue", width=2)
+    draw.text((w-200, head_min+5), "Head height 1–1⅜ inch", fill="blue")
+
+    # Eye line (approx)
+    eye_line_y = int(h * 0.4)
+    draw.line([(50, eye_line_y), (w-50, eye_line_y)], fill="green", width=2)
+    draw.text((60, eye_line_y + 5), "Eye line ~1.18 in from bottom", fill="green")
+
+    # Inch markings
+    inch_px = FINAL_PX // 2
+    for i in range(1, 2):
+        y = i * inch_px
+        draw.line([(0, y), (15, y)], fill="black", width=2)
+        draw.text((20, y - 10), f"{i} inch", fill="black")
+        draw.line([(y, 0), (y, 15)], fill="black", width=2)
+        draw.text((y - 15, 20), f"{i} inch", fill="black")
+
+    draw.text((10, 10), "2x2 inch (51x51 mm)", fill="black")
+    return img
+
+def add_border_and_padding(img, padding=10):
+    """Add subtle border and padding for Streamlit display."""
+    bordered = ImageOps.expand(img, border=padding, fill="gray")
+    return bordered
+
+# ---------------------- STREAMLIT UI ----------------------
+
+uploaded_file = st.file_uploader("Upload your photo (JPG/JPEG)", type=["jpg", "jpeg"])
+
+if uploaded_file:
     try:
-        font = ImageFont.truetype("arial.ttf", 18)
-    except:
-        font = ImageFont.load_default()
+        img_bytes = uploaded_file.read()
+        orig = Image.open(io.BytesIO(img_bytes))
+        if orig.mode != "RGB":
+            orig = orig.convert("RGB")
 
-    # Pillow 10.x uses textbbox instead of textsize
-    def text_size(draw_obj, text, font):
-        bbox = draw_obj.textbbox((0, 0), text, font=font)
-        return bbox[2] - bbox[0], bbox[3] - bbox[1]
-
-    labels = [
-        ("Head top", head_top_y),
-        ("Eye line", eye_y),
-        ("Chin", chin_y)
-    ]
-
-    for label, y in labels:
-        tw, th = text_size(draw, label, font)
-        draw.rectangle([(10, y - th - 4), (20 + tw, y)], fill=(255, 255, 255, 180))
-        draw.text((15, y - th - 2), label, fill=text_color, font=font)
-
-    return image
-
-# ---- Process uploaded image ----
-if uploaded_file is not None:
-    try:
-        # Read file bytes
-        input_bytes = uploaded_file.read()
-        input_image = Image.open(io.BytesIO(input_bytes)).convert("RGBA")
-
-        # Remove background
-        bg_removed = remove(input_image)
-
-        # Resize to 600x600px (2x2 inch at 300dpi)
-        final_img = bg_removed.resize((600, 600))
-
-        # Clean transparent edges with white background
-        white_bg = Image.new("RGBA", final_img.size, (255, 255, 255, 255))
-        white_bg.paste(final_img, mask=final_img.getchannel("A"))
-        cleaned = white_bg.convert("RGB")
-
-        # Draw guidelines
-        final_preview = draw_guidelines(cleaned.copy())
-
-        # Display side-by-side
         col1, col2 = st.columns(2)
         with col1:
-            st.image(input_image, caption="📤 Uploaded Photo", use_container_width=True)
-        with col2:
-            st.image(final_preview, caption="✅ DV-Compliant Photo with Guidelines", use_container_width=True)
+            st.subheader("📤 Original Photo")
+            st.image(add_border_and_padding(orig), caption="Original", use_column_width=False)
 
-        # Download button
-        buf = io.BytesIO()
-        final_preview.save(buf, format="JPEG")
-        byte_im = buf.getvalue()
-        st.download_button("📥 Download Final Photo", data=byte_im, file_name="dv_lottery_photo.jpg", mime="image/jpeg")
+        with col2:
+            st.subheader("✅ Processed (DV Compliant)")
+            bg_removed = remove_background(orig)
+            processed = crop_and_resize(bg_removed)
+            final_preview = draw_guidelines(processed.copy())
+            st.image(add_border_and_padding(final_preview), caption="DV Compliance Preview", use_column_width=False)
+
+            # Download button
+            buf = io.BytesIO()
+            processed.save(buf, format="JPEG", quality=95)
+            buf.seek(0)
+            st.download_button(
+                "⬇️ Download DV-Ready Photo (600x600)",
+                data=buf,
+                file_name="dvlottery_photo.jpg",
+                mime="image/jpeg"
+            )
 
     except Exception as e:
         st.error(f"❌ Could not process image: {e}")
-else:
-    st.info("Please upload a photo to begin.")
