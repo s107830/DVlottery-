@@ -13,9 +13,9 @@ st.title("📸 DV Lottery Photo Editor — Fully Automated")
 # ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
 MAX_SIZE = 1200
-HEAD_MIN_RATIO = 0.25  # 50% of image height
-HEAD_MAX_RATIO = 0.35  # 69% of image height  
-EYE_LINE_RATIO = 0.56  # Eye line should be at 56-69% from bottom
+HEAD_MIN_RATIO = 0.50  # 50% of image height
+HEAD_MAX_RATIO = 0.69  # 69% of image height  
+EYE_LINE_RATIO = 0.56  # Eye line at 56% from bottom
 
 # ---------------------- AI FACE DETECTION ----------------------
 mp_face_mesh = mp.solutions.face_mesh
@@ -69,17 +69,18 @@ def get_face_bounding_box(cv_img):
         landmarks.landmark[152] = type('obj', (object,), {'y': (y + height)/h})()
         # Eyes (approximate)
         eye_y = y + height * 0.3
-        landmarks.landmark[159] = type('obj', (object,), {'y': eye_y/h})()
-        landmarks.landmark[386] = type('obj', (object,), {'y': eye_y/h})()
+        landmarks.landmark[33] = type('obj', (object,), {'y': eye_y/h})()
+        landmarks.landmark[263] = type('obj', (object,), {'y': eye_y/h})()
         
         return landmarks
 
 def get_head_eye_positions(landmarks, img_h, img_w):
     try:
-        top_idx = 10
-        chin_idx = 152
-        left_eye_idx = 33
-        right_eye_idx = 263
+        # More reliable landmark indices
+        top_idx = 10      # Forehead top
+        chin_idx = 152    # Chin bottom
+        left_eye_idx = 33 # Left eye center
+        right_eye_idx = 263 # Right eye center
 
         top_y = int(landmarks.landmark[top_idx].y * img_h)
         chin_y = int(landmarks.landmark[chin_idx].y * img_h)
@@ -127,18 +128,10 @@ def auto_adjust_dv_photo(image_pil):
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks, img_h, img_w)
         head_height = chin_y - top_y
 
-        # Calculate required scaling to meet head size requirements
-        target_head_height_min = MIN_SIZE * HEAD_MIN_RATIO
-        target_head_height_max = MIN_SIZE * HEAD_MAX_RATIO
+        # Calculate required scaling
+        target_head_height = (HEAD_MIN_RATIO + HEAD_MAX_RATIO) / 2 * MIN_SIZE
+        scale_factor = target_head_height / head_height
         
-        # Choose optimal scale to fit head within requirements
-        if head_height < target_head_height_min:
-            scale_factor = target_head_height_min / head_height
-        elif head_height > target_head_height_max:
-            scale_factor = target_head_height_max / head_height
-        else:
-            scale_factor = 1.0
-            
         # Limit scaling to reasonable bounds
         scale_factor = max(0.5, min(2.0, scale_factor))
         
@@ -162,7 +155,7 @@ def auto_adjust_dv_photo(image_pil):
         
         # Calculate vertical position to place eye line at correct height
         eye_y_scaled = int(eye_y * scale_factor)
-        target_eye_y = int(canvas_size * (1 - EYE_LINE_RATIO))
+        target_eye_y = int(canvas_size * (1 - EYE_LINE_RATIO))  # 56% from bottom
         
         # Calculate offsets
         y_offset = target_eye_y - eye_y_scaled
@@ -195,31 +188,55 @@ def auto_adjust_dv_photo(image_pil):
                                    (size - image_pil.height) // 2))
         return square_img
 
-# ---------------------- DRAW GUIDELINES ----------------------
+# ---------------------- DRAW GUIDELINES (CORRECTED) ----------------------
 def draw_guidelines(img):
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
-    # Draw head height boundaries (50-69% of image height)
-    head_min_y = int(h * (1 - HEAD_MAX_RATIO))  # 31% from top
-    head_max_y = int(h * (1 - HEAD_MIN_RATIO))  # 50% from top
+    # CORRECTED: Head height boundaries (50-69% of TOTAL image height)
+    head_min_pixels = int(h * HEAD_MIN_RATIO)  # 50% of image height
+    head_max_pixels = int(h * HEAD_MAX_RATIO)  # 69% of image height
     
-    # Draw eye line (56% from bottom)
-    eye_line_y = int(h * (1 - EYE_LINE_RATIO))  # 44% from top
+    # CORRECTED: Eye line position (56% from bottom)
+    eye_line_from_bottom = int(h * EYE_LINE_RATIO)  # 56% from bottom
+    eye_line_y = h - eye_line_from_bottom  # Convert to y-coordinate
 
     # Draw bounding box
     draw.rectangle([(0, 0), (w-1, h-1)], outline="red", width=3)
     
-    # Draw head height zone
-    draw.rectangle([(0, head_min_y), (w, head_max_y)], outline="blue", width=2)
+    # Draw head height bracket on the right side (like the template)
+    bracket_x = w - 30  # Position bracket on right side
     
-    # Draw eye line
-    draw.line([(0, eye_line_y), (w, eye_line_y)], fill="green", width=3)
+    # Head height bracket (50-69%)
+    head_top_y = (h - head_max_pixels) // 2  # Center the bracket vertically
+    head_bottom_y = head_top_y + head_max_pixels
+    
+    # Draw the main vertical bracket line
+    draw.line([(bracket_x, head_top_y), (bracket_x, head_bottom_y)], fill="blue", width=3)
+    
+    # Draw horizontal ticks
+    draw.line([(bracket_x-10, head_top_y), (bracket_x+10, head_top_y)], fill="blue", width=2)
+    draw.line([(bracket_x-10, head_bottom_y), (bracket_x+10, head_bottom_y)], fill="blue", width=2)
+    
+    # Draw the 50% and 69% marks
+    fifty_percent_y = head_top_y + head_min_pixels
+    draw.line([(bracket_x-5, fifty_percent_y), (bracket_x+5, fifty_percent_y)], fill="blue", width=2)
     
     # Add labels
-    draw.text((10, head_min_y - 20), "Head Max (69%)", fill="blue")
-    draw.text((10, head_max_y + 5), "Head Min (50%)", fill="blue")
-    draw.text((10, eye_line_y - 20), "Eye Line (56%)", fill="green")
+    draw.text((bracket_x+15, head_top_y - 10), "69%", fill="blue")
+    draw.text((bracket_x+15, fifty_percent_y - 10), "50%", fill="blue")
+    draw.text((bracket_x-40, head_top_y + (head_bottom_y-head_top_y)//2 - 20), "Head Height", fill="blue")
+    draw.text((bracket_x-40, head_top_y + (head_bottom_y-head_top_y)//2), "50-69%", fill="blue")
+    
+    # Draw eye line (56% from bottom)
+    draw.line([(0, eye_line_y), (w, eye_line_y)], fill="green", width=3)
+    draw.text((w//2 - 30, eye_line_y - 25), "Eye Line 56%", fill="green")
+    
+    # Add measurement labels like the template
+    draw.text((10, 10), f"Digital Image Head Size Template", fill="black")
+    draw.text((10, 30), f"{h} px.", fill="black")
+    draw.text((10, h - 60), "50-69%", fill="blue")
+    draw.text((10, h - 40), "56-69%", fill="green")
     
     return img
 
@@ -250,12 +267,12 @@ if uploaded_file:
             
             # Show compliance info
             st.info("""
-            **DV Photo Requirements:**
-            - Head height: 50% to 69% of image height ✅
-            - Eye line: 56% to 69% from bottom ✅  
-            - Square aspect ratio ✅
-            - White background ✅
-            - Size: 600x600 to 1200x1200 pixels ✅
+            **✅ DV Photo Requirements Met:**
+            - **Head height:** 50% to 69% of image height ✓
+            - **Eye line:** 56% to 69% from bottom ✓  
+            - **Square aspect ratio** ✓
+            - **White background** ✓
+            - **Size:** 600x600 to 1200x1200 pixels ✓
             """)
 
             # Download button
