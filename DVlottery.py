@@ -6,10 +6,6 @@ import io
 import mediapipe as mp
 from rembg import remove
 import warnings
-import av
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import threading
-import queue
 
 warnings.filterwarnings('ignore')
 
@@ -24,162 +20,6 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
-
-# ---------------------- CAMERA PROCESSOR CLASS ----------------------
-class DVPhotoCamera:
-    def __init__(self):
-        self.face_mesh = mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        self.frame_queue = queue.Queue(maxsize=1)
-        self.captured_image = None
-        self.capture_event = threading.Event()
-        
-    def draw_dv_overlay(self, image, face_landmarks=None):
-        """Draw the DV lottery photo guide overlay exactly like the reference image"""
-        h, w = image.shape[:2]
-        
-        # Create a transparent overlay
-        overlay = image.copy()
-        
-        # Define colors
-        GREEN = (0, 255, 0)  # Bright green for outlines
-        SEMI_TRANSPARENT = (0, 255, 0, 128)  # Semi-transparent green for eye band
-        
-        # 1. Draw the head outline (green oval)
-        if face_landmarks:
-            try:
-                # Get face bounding points
-                landmarks = face_landmarks.landmark
-                
-                # Get forehead (approx), chin, and side points
-                forehead = landmarks[10]   # Forehead
-                chin = landmarks[152]      # Chin
-                left_side = landmarks[234] # Left face contour
-                right_side = landmarks[454] # Right face contour
-                
-                # Calculate head dimensions
-                head_top = int(forehead.y * h) - int(0.1 * h)  # Add some margin above head
-                head_bottom = int(chin.y * h) + int(0.05 * h)  # Add some margin below chin
-                head_left = int(left_side.x * w)
-                head_right = int(right_side.x * w)
-                
-                head_center_x = (head_left + head_right) // 2
-                head_center_y = (head_top + head_bottom) // 2
-                head_width = head_right - head_left
-                head_height = head_bottom - head_top
-                
-                # Draw green oval around head
-                cv2.ellipse(overlay, 
-                           (head_center_x, head_center_y),
-                           (head_width//2, head_height//2),
-                           0, 0, 360, GREEN, 3)
-                
-            except Exception as e:
-                # If face detection fails, draw default oval in center
-                head_center_x, head_center_y = w//2, h//2
-                head_width, head_height = int(w*0.4), int(h*0.6)
-                cv2.ellipse(overlay,
-                           (head_center_x, head_center_y),
-                           (head_width//2, head_height//2),
-                           0, 0, 360, GREEN, 3)
-        else:
-            # Draw default oval in center when no face detected
-            head_center_x, head_center_y = w//2, h//2
-            head_width, head_height = int(w*0.4), int(h*0.6)
-            cv2.ellipse(overlay,
-                       (head_center_x, head_center_y),
-                       (head_width//2, head_height//2),
-                       0, 0, 360, GREEN, 3)
-        
-        # 2. Draw the eye-level horizontal band (semi-transparent green rectangle)
-        eye_level_y = int(h * 0.62)  # 62% from top (middle of eye position range)
-        band_height = int(h * 0.08)  # 8% of height for the band
-        
-        # Create semi-transparent eye band
-        eye_band = image.copy()
-        cv2.rectangle(eye_band, 
-                     (0, eye_level_y - band_height//2),
-                     (w, eye_level_y + band_height//2),
-                     GREEN, -1)  # Filled rectangle
-        
-        # Blend the eye band with original image
-        alpha = 0.3  # Transparency factor
-        cv2.addWeighted(eye_band, alpha, overlay, 1 - alpha, 0, overlay)
-        
-        # 3. Add eye level guide lines
-        cv2.line(overlay, 
-                (0, eye_level_y), 
-                (w, eye_level_y), 
-                GREEN, 2)
-        
-        # 4. Add measurement text
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        cv2.putText(overlay, f"Eye Level: 62%", 
-                   (10, eye_level_y - band_height//2 - 10), 
-                   font, 0.6, GREEN, 2)
-        
-        # 5. Add alignment status
-        if face_landmarks:
-            try:
-                # Check if eyes are at correct level
-                left_eye = face_landmarks.landmark[33]
-                right_eye = face_landmarks.landmark[263]
-                eye_y = (left_eye.y + right_eye.y) / 2 * h
-                
-                eye_band_top = eye_level_y - band_height//2
-                eye_band_bottom = eye_level_y + band_height//2
-                
-                if eye_band_top <= eye_y <= eye_band_bottom:
-                    status_text = "ALIGNED - Ready to Capture!"
-                    status_color = (0, 255, 0)  # Green
-                else:
-                    status_text = "ADJUST POSITION - Move up/down"
-                    status_color = (0, 165, 255)  # Orange
-                
-                cv2.putText(overlay, status_text, 
-                           (w//2 - 200, 40), font, 0.7, status_color, 2)
-                
-            except:
-                cv2.putText(overlay, "Align face with green guides", 
-                           (w//2 - 150, 40), font, 0.7, GREEN, 2)
-        else:
-            cv2.putText(overlay, "Position face in oval", 
-                       (w//2 - 120, 40), font, 0.7, GREEN, 2)
-        
-        return overlay
-    
-    def process_frame(self, frame):
-        """Process each camera frame and add DV overlay"""
-        # Convert BGR to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Process with face mesh
-        results = self.face_mesh.process(rgb_frame)
-        
-        # Draw DV overlay
-        if results.multi_face_landmarks:
-            overlay_frame = self.draw_dv_overlay(frame, results.multi_face_landmarks[0])
-        else:
-            overlay_frame = self.draw_dv_overlay(frame)
-        
-        return overlay_frame
-    
-    def capture_photo(self, frame):
-        """Capture and store the current frame"""
-        self.captured_image = frame.copy()
-        self.capture_event.set()
-    
-    def get_captured_image(self):
-        """Get the captured image and reset the event"""
-        if self.capture_event.is_set():
-            self.capture_event.clear()
-            return self.captured_image
-        return None
 
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
@@ -604,33 +444,45 @@ def draw_guidelines(img, head_info):
         st.error(f"Guideline drawing error: {str(e)}")
         return img, 0, 0
 
-# ---------------------- VIDEO PROCESSOR FOR CAMERA ----------------------
-class VideoProcessor:
-    def __init__(self):
-        self.camera_processor = None
+# ---------------------- SIMPLE CAMERA CAPTURE FUNCTION ----------------------
+def simple_camera_capture():
+    """Simple camera capture using st.camera_input"""
+    st.subheader("📷 Take Photo with Camera")
     
-    def recv(self, frame):
-        if self.camera_processor is None:
-            self.camera_processor = DVPhotoCamera()
+    st.markdown("""
+    ### 🎯 Camera Guide for Perfect DV Lottery Photos
+    
+    **How to use:**
+    1. **Allow camera access** when prompted
+    2. **Position your face** in the center
+    3. **Look straight** at the camera
+    4. **Ensure good lighting**
+    5. **Take photo** and process it
+    
+    **Requirements:**
+    - Face directly facing camera
+    - Neutral expression, eyes open
+    - Plain background recommended
+    - Good lighting, no shadows
+    """)
+    
+    # Camera input
+    camera_photo = st.camera_input("Take a photo for DV Lottery", key="camera_capture")
+    
+    if camera_photo:
+        # Process the captured photo
+        st.success("✅ Photo captured! Processing...")
         
-        img = frame.to_ndarray(format="bgr24")
+        # Convert to PIL
+        captured_pil = Image.open(camera_photo).convert("RGB")
         
-        # Process frame with DV overlay
-        processed_img = self.camera_processor.process_frame(img)
+        # Store in session state for processing
+        st.session_state.captured_from_camera = captured_pil
+        st.session_state.last_upload = "camera_capture"
         
-        # Put frame in queue for potential capture
-        try:
-            self.camera_processor.frame_queue.put_nowait(processed_img)
-        except queue.Full:
-            pass
-        
-        return av.VideoFrame.from_ndarray(processed_img, format="bgr24")
+        st.rerun()
 
 # ---------------------- STREAMLIT UI ----------------------
-
-# Initialize camera processor in session state
-if 'camera_processor' not in st.session_state:
-    st.session_state.camera_processor = DVPhotoCamera()
 
 # Sidebar
 with st.sidebar:
@@ -661,17 +513,27 @@ with st.sidebar:
     enhance_quality = st.checkbox("Enhance Image Quality", value=True)
 
 # Main content with tabs
-tab1, tab2 = st.tabs(["📤 Upload Photo", "📷 Camera Guide"])
+tab1, tab2 = st.tabs(["📤 Upload Photo", "📷 Camera"])
 
 with tab1:
-    # Upload photo processing (existing functionality)
+    # Upload photo processing
     uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"], key="uploader")
+
+    # Check if we have a photo from camera to process
+    if 'captured_from_camera' in st.session_state and st.session_state.get('last_upload') == "camera_capture":
+        uploaded_file = st.session_state.captured_from_camera
+        st.info("📸 Processing photo from camera...")
 
     if uploaded_file:
         # Initialize session state
-        if 'processed_data' not in st.session_state or st.session_state.get('last_upload') != uploaded_file.name:
-            st.session_state.last_upload = uploaded_file.name
-            orig = Image.open(uploaded_file).convert("RGB")
+        if 'processed_data' not in st.session_state or st.session_state.get('last_upload') != (uploaded_file.name if hasattr(uploaded_file, 'name') else "camera_capture"):
+            if hasattr(uploaded_file, 'name'):
+                st.session_state.last_upload = uploaded_file.name
+                orig = Image.open(uploaded_file).convert("RGB")
+            else:
+                # This is from camera
+                orig = uploaded_file
+                st.session_state.last_upload = "camera_capture"
             
             with st.spinner("🔄 Processing photo and checking compliance..."):
                 try:
@@ -861,114 +723,16 @@ with tab1:
         - ✅ Auto-adjust head and eye positions
         - ✅ Provide compliance report
         
-        **or use the 📷 Camera Guide tab to take a new photo with alignment guides!**
+        **or use the 📷 Camera tab to take a new photo!**
         """)
 
 with tab2:
-    st.header("📷 DV Lottery Camera Guide")
-    
-    # Instructions
-    st.markdown("""
-    ## 🎯 Live Camera Guide for Perfect DV Lottery Photos
-    
-    **How to use:**
-    1. **Allow camera access** when prompted
-    2. **Position your face** inside the green oval
-    3. **Align your eyes** with the green horizontal band
-    4. **Wait for "ALIGNED" message**
-    5. **Click "Capture Photo"** when ready
-    6. **Process the photo** in the upload tab
-    
-    ### 📐 Alignment Guides:
-    - **Green Oval**: Position your head within this outline
-    - **Green Band**: Align your eyes with this horizontal guide (56%-69% from top)
-    - **Status Text**: Shows when you're perfectly aligned
-    """)
-    
-    # WebRTC configuration
-    RTC_CONFIGURATION = RTCConfiguration({
-        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-    })
-    
-    # Create two columns for camera and controls
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        # WebRTC streamer
-        webrtc_ctx = webrtc_streamer(
-            key="dv-camera",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTC_CONFIGURATION,
-            video_processor_factory=VideoProcessor,
-            media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-        )
-    
-    with col2:
-        st.subheader("Camera Controls")
-        
-        # Capture button
-        if st.button("📸 Capture Photo", use_container_width=True, type="primary", key="capture"):
-            if webrtc_ctx.state.playing:
-                # Get the latest frame from queue
-                try:
-                    current_frame = st.session_state.camera_processor.frame_queue.get_nowait()
-                    st.session_state.camera_processor.capture_photo(current_frame)
-                    st.success("✅ Photo captured successfully!")
-                except queue.Empty:
-                    st.warning("⚠️ No frame available. Please wait for camera to initialize.")
-            else:
-                st.error("❌ Camera not active. Please start the camera first.")
-        
-        st.markdown("---")
-        st.subheader("Next Steps")
-        
-        if st.button("🖼️ View & Process Captured Photo", use_container_width=True, key="view"):
-            captured_img = st.session_state.camera_processor.get_captured_image()
-            if captured_img is not None:
-                # Convert to PIL and store in session state for upload tab
-                pil_image = Image.fromarray(cv2.cvtColor(captured_img, cv2.COLOR_BGR2RGB))
-                st.session_state.captured_from_camera = pil_image
-                st.success("✅ Photo ready for processing! Switch to the 'Upload Photo' tab.")
-            else:
-                st.warning("No photo captured yet. Please capture a photo first.")
-    
-    # Display captured photo if available
-    captured_img = st.session_state.camera_processor.get_captured_image()
-    if captured_img is not None:
-        st.subheader("📸 Your Captured Photo")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.image(captured_img, channels="BGR", 
-                    caption="Captured Photo with DV Guides", use_column_width=True)
-        
-        with col2:
-            # Convert to PIL for download
-            pil_image = Image.fromarray(
-                cv2.cvtColor(captured_img, cv2.COLOR_BGR2RGB)
-            )
-            
-            # Download button
-            buf = io.BytesIO()
-            pil_image.save(buf, format="JPEG", quality=95)
-            
-            st.download_button(
-                label="💾 Download Photo with Guides",
-                data=buf.getvalue(),
-                file_name="dv_lottery_photo_with_guides.jpg",
-                mime="image/jpeg",
-                use_container_width=True
-            )
-            
-            if st.button("🔄 Capture New Photo", use_container_width=True, key="new_capture"):
-                st.session_state.camera_processor.captured_image = None
-                st.rerun()
+    # Simple camera capture
+    simple_camera_capture()
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Complete solution with camera guide & compliance checking*")
+st.markdown("*DV Lottery Photo Editor | Complete solution with camera capture & compliance checking*")
 
 # Clear session state when switching between modes
 if 'last_upload' in st.session_state and st.session_state.last_upload == "camera_capture":
