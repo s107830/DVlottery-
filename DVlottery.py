@@ -6,6 +6,11 @@ import io
 import mediapipe as mp
 from rembg import remove
 import warnings
+import av
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+import threading
+import queue
+
 warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
@@ -19,6 +24,162 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
+
+# ---------------------- CAMERA PROCESSOR CLASS ----------------------
+class DVPhotoCamera:
+    def __init__(self):
+        self.face_mesh = mp_face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.frame_queue = queue.Queue(maxsize=1)
+        self.captured_image = None
+        self.capture_event = threading.Event()
+        
+    def draw_dv_overlay(self, image, face_landmarks=None):
+        """Draw the DV lottery photo guide overlay exactly like the reference image"""
+        h, w = image.shape[:2]
+        
+        # Create a transparent overlay
+        overlay = image.copy()
+        
+        # Define colors
+        GREEN = (0, 255, 0)  # Bright green for outlines
+        SEMI_TRANSPARENT = (0, 255, 0, 128)  # Semi-transparent green for eye band
+        
+        # 1. Draw the head outline (green oval)
+        if face_landmarks:
+            try:
+                # Get face bounding points
+                landmarks = face_landmarks.landmark
+                
+                # Get forehead (approx), chin, and side points
+                forehead = landmarks[10]   # Forehead
+                chin = landmarks[152]      # Chin
+                left_side = landmarks[234] # Left face contour
+                right_side = landmarks[454] # Right face contour
+                
+                # Calculate head dimensions
+                head_top = int(forehead.y * h) - int(0.1 * h)  # Add some margin above head
+                head_bottom = int(chin.y * h) + int(0.05 * h)  # Add some margin below chin
+                head_left = int(left_side.x * w)
+                head_right = int(right_side.x * w)
+                
+                head_center_x = (head_left + head_right) // 2
+                head_center_y = (head_top + head_bottom) // 2
+                head_width = head_right - head_left
+                head_height = head_bottom - head_top
+                
+                # Draw green oval around head
+                cv2.ellipse(overlay, 
+                           (head_center_x, head_center_y),
+                           (head_width//2, head_height//2),
+                           0, 0, 360, GREEN, 3)
+                
+            except Exception as e:
+                # If face detection fails, draw default oval in center
+                head_center_x, head_center_y = w//2, h//2
+                head_width, head_height = int(w*0.4), int(h*0.6)
+                cv2.ellipse(overlay,
+                           (head_center_x, head_center_y),
+                           (head_width//2, head_height//2),
+                           0, 0, 360, GREEN, 3)
+        else:
+            # Draw default oval in center when no face detected
+            head_center_x, head_center_y = w//2, h//2
+            head_width, head_height = int(w*0.4), int(h*0.6)
+            cv2.ellipse(overlay,
+                       (head_center_x, head_center_y),
+                       (head_width//2, head_height//2),
+                       0, 0, 360, GREEN, 3)
+        
+        # 2. Draw the eye-level horizontal band (semi-transparent green rectangle)
+        eye_level_y = int(h * 0.62)  # 62% from top (middle of eye position range)
+        band_height = int(h * 0.08)  # 8% of height for the band
+        
+        # Create semi-transparent eye band
+        eye_band = image.copy()
+        cv2.rectangle(eye_band, 
+                     (0, eye_level_y - band_height//2),
+                     (w, eye_level_y + band_height//2),
+                     GREEN, -1)  # Filled rectangle
+        
+        # Blend the eye band with original image
+        alpha = 0.3  # Transparency factor
+        cv2.addWeighted(eye_band, alpha, overlay, 1 - alpha, 0, overlay)
+        
+        # 3. Add eye level guide lines
+        cv2.line(overlay, 
+                (0, eye_level_y), 
+                (w, eye_level_y), 
+                GREEN, 2)
+        
+        # 4. Add measurement text
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        cv2.putText(overlay, f"Eye Level: 62%", 
+                   (10, eye_level_y - band_height//2 - 10), 
+                   font, 0.6, GREEN, 2)
+        
+        # 5. Add alignment status
+        if face_landmarks:
+            try:
+                # Check if eyes are at correct level
+                left_eye = face_landmarks.landmark[33]
+                right_eye = face_landmarks.landmark[263]
+                eye_y = (left_eye.y + right_eye.y) / 2 * h
+                
+                eye_band_top = eye_level_y - band_height//2
+                eye_band_bottom = eye_level_y + band_height//2
+                
+                if eye_band_top <= eye_y <= eye_band_bottom:
+                    status_text = "ALIGNED - Ready to Capture!"
+                    status_color = (0, 255, 0)  # Green
+                else:
+                    status_text = "ADJUST POSITION - Move up/down"
+                    status_color = (0, 165, 255)  # Orange
+                
+                cv2.putText(overlay, status_text, 
+                           (w//2 - 200, 40), font, 0.7, status_color, 2)
+                
+            except:
+                cv2.putText(overlay, "Align face with green guides", 
+                           (w//2 - 150, 40), font, 0.7, GREEN, 2)
+        else:
+            cv2.putText(overlay, "Position face in oval", 
+                       (w//2 - 120, 40), font, 0.7, GREEN, 2)
+        
+        return overlay
+    
+    def process_frame(self, frame):
+        """Process each camera frame and add DV overlay"""
+        # Convert BGR to RGB
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Process with face mesh
+        results = self.face_mesh.process(rgb_frame)
+        
+        # Draw DV overlay
+        if results.multi_face_landmarks:
+            overlay_frame = self.draw_dv_overlay(frame, results.multi_face_landmarks[0])
+        else:
+            overlay_frame = self.draw_dv_overlay(frame)
+        
+        return overlay_frame
+    
+    def capture_photo(self, frame):
+        """Capture and store the current frame"""
+        self.captured_image = frame.copy()
+        self.capture_event.set()
+    
+    def get_captured_image(self):
+        """Get the captured image and reset the event"""
+        if self.capture_event.is_set():
+            self.capture_event.clear()
+            return self.captured_image
+        return None
 
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
@@ -443,7 +604,33 @@ def draw_guidelines(img, head_info):
         st.error(f"Guideline drawing error: {str(e)}")
         return img, 0, 0
 
+# ---------------------- VIDEO PROCESSOR FOR CAMERA ----------------------
+class VideoProcessor:
+    def __init__(self):
+        self.camera_processor = None
+    
+    def recv(self, frame):
+        if self.camera_processor is None:
+            self.camera_processor = DVPhotoCamera()
+        
+        img = frame.to_ndarray(format="bgr24")
+        
+        # Process frame with DV overlay
+        processed_img = self.camera_processor.process_frame(img)
+        
+        # Put frame in queue for potential capture
+        try:
+            self.camera_processor.frame_queue.put_nowait(processed_img)
+        except queue.Full:
+            pass
+        
+        return av.VideoFrame.from_ndarray(processed_img, format="bgr24")
+
 # ---------------------- STREAMLIT UI ----------------------
+
+# Initialize camera processor in session state
+if 'camera_processor' not in st.session_state:
+    st.session_state.camera_processor = DVPhotoCamera()
 
 # Sidebar
 with st.sidebar:
@@ -473,224 +660,317 @@ with st.sidebar:
     st.header("⚙️ Settings")
     enhance_quality = st.checkbox("Enhance Image Quality", value=True)
 
-# Main content
-uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"])
+# Main content with tabs
+tab1, tab2 = st.tabs(["📤 Upload Photo", "📷 Camera Guide"])
 
-if uploaded_file:
-    # Initialize session state
-    if 'processed_data' not in st.session_state or st.session_state.get('last_upload') != uploaded_file.name:
-        st.session_state.last_upload = uploaded_file.name
-        orig = Image.open(uploaded_file).convert("RGB")
-        
-        with st.spinner("🔄 Processing photo and checking compliance..."):
-            try:
-                bg_removed = remove_background(orig)
-                processed, head_info, compliance_issues = process_dv_photo_initial(bg_removed)
-                processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
-                
-                head_compliant = HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
-                eye_compliant = EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO
-                needs_fix = not (head_compliant and eye_compliant)
-                
-                st.session_state.processed_data = {
-                    'orig': orig,
-                    'processed': processed,
-                    'processed_with_lines': processed_with_lines,
-                    'head_info': head_info,
-                    'head_ratio': head_ratio,
-                    'eye_ratio': eye_ratio,
-                    'needs_fix': needs_fix,
-                    'head_compliant': head_compliant,
-                    'eye_compliant': eye_compliant,
-                    'bg_removed': bg_removed,
-                    'is_adjusted': False,
-                    'compliance_issues': compliance_issues
-                }
-            except Exception as e:
-                st.error(f"❌ Error processing image: {str(e)}")
-                st.info("💡 Tip: Try a different photo with clear facial features")
-                st.stop()
+with tab1:
+    # Upload photo processing (existing functionality)
+    uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"], key="uploader")
 
-    # Get data from session state
-    data = st.session_state.processed_data
-    
-    # Show baby detection info only if it's actually a baby
-    if data['head_info'].get('is_baby', False):
-        st.info("👶 **Baby photo detected** - Using special adjustments for infant facial proportions")
-    
-    # Display results
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_column_width=True)
-        st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
+    if uploaded_file:
+        # Initialize session state
+        if 'processed_data' not in st.session_state or st.session_state.get('last_upload') != uploaded_file.name:
+            st.session_state.last_upload = uploaded_file.name
+            orig = Image.open(uploaded_file).convert("RGB")
+            
+            with st.spinner("🔄 Processing photo and checking compliance..."):
+                try:
+                    bg_removed = remove_background(orig)
+                    processed, head_info, compliance_issues = process_dv_photo_initial(bg_removed)
+                    processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
+                    
+                    head_compliant = HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
+                    eye_compliant = EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO
+                    needs_fix = not (head_compliant and eye_compliant)
+                    
+                    st.session_state.processed_data = {
+                        'orig': orig,
+                        'processed': processed,
+                        'processed_with_lines': processed_with_lines,
+                        'head_info': head_info,
+                        'head_ratio': head_ratio,
+                        'eye_ratio': eye_ratio,
+                        'needs_fix': needs_fix,
+                        'head_compliant': head_compliant,
+                        'eye_compliant': eye_compliant,
+                        'bg_removed': bg_removed,
+                        'is_adjusted': False,
+                        'compliance_issues': compliance_issues
+                    }
+                except Exception as e:
+                    st.error(f"❌ Error processing image: {str(e)}")
+                    st.info("💡 Tip: Try a different photo with clear facial features")
+                    st.stop()
 
-    with col2:
-        status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
-        st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_column_width=True)
-        st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
-        if data['is_adjusted']:
-            st.success("✅ Auto-adjustment applied")
-
-    # COMPLIANCE ISSUES DISPLAY
-    st.subheader("🔍 Compliance Check Results")
-    
-    if data['compliance_issues']:
-        st.error("❌ **Issues Found - Please upload a new photo:**")
-        for issue in data['compliance_issues']:
-            st.write(f"- {issue}")
+        # Get data from session state
+        data = st.session_state.processed_data
         
-        # Show specific warnings based on issues
-        critical_issues = any("not detect face" in issue.lower() or "processing error" in issue.lower() for issue in data['compliance_issues'])
-        if critical_issues:
-            st.warning("**⚠️ Please upload a clear front-facing photo where your face is clearly visible**")
+        # Show baby detection info only if it's actually a baby
+        if data['head_info'].get('is_baby', False):
+            st.info("👶 **Baby photo detected** - Using special adjustments for infant facial proportions")
         
-    else:
-        st.success("✅ **All compliance checks passed!** Your photo meets the basic DV Lottery requirements.")
-
-    # Compliance Dashboard
-    st.subheader("📊 Measurements Dashboard")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        head_status = "✅ PASS" if data['head_compliant'] else "❌ FAIL"
-        st.metric("Head Height", f"{int(data['head_ratio']*100)}%")
-        st.write(head_status)
-        st.progress(min(max(data['head_ratio'] / HEAD_MAX_RATIO, 0), 1.0))
-        
-    with col2:
-        eye_status = "✅ PASS" if data['eye_compliant'] else "❌ FAIL"
-        st.metric("Eye Position", f"{int(data['eye_ratio']*100)}%")
-        st.write(eye_status)
-        st.progress(min(max(data['eye_ratio'] / EYE_MAX_RATIO, 0), 1.0))
-        
-    with col3:
-        # Only show overall compliant if no compliance issues and measurements are good
-        overall_compliant = not data['needs_fix'] and not data['compliance_issues']
-        overall_status = "✅ COMPLIANT" if overall_compliant else "❌ NEEDS FIXING"
-        st.metric("Overall Status", overall_status)
-        if overall_compliant:
-            st.success("🎉 Perfect! Your photo meets all requirements!")
-        else:
-            st.error("⚠️ Photo needs adjustment or replacement.")
-
-    # Fix Section - ALWAYS SHOW FIX BUTTON if there are measurement issues
-    if data['needs_fix']:
-        st.subheader("🛠️ Photo Correction")
-        
-        col1, col2 = st.columns([2, 1])
+        # Display results
+        col1, col2 = st.columns(2)
         
         with col1:
-            issues = []
-            if not data['head_compliant']:
-                issues.append("Head height out of range")
-            if not data['eye_compliant']:
-                issues.append("Eye position out of range")
+            st.subheader("📷 Original Photo")
+            st.image(data['orig'], use_column_width=True)
+            st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
+
+        with col2:
+            status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
+            st.subheader(status_text)
+            st.image(data['processed_with_lines'], use_column_width=True)
+            st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
+            if data['is_adjusted']:
+                st.success("✅ Auto-adjustment applied")
+
+        # COMPLIANCE ISSUES DISPLAY
+        st.subheader("🔍 Compliance Check Results")
+        
+        if data['compliance_issues']:
+            st.error("❌ **Issues Found - Please upload a new photo:**")
+            for issue in data['compliance_issues']:
+                st.write(f"- {issue}")
             
-            st.warning(f"**Measurement Issues:** - {' | '.join(issues)}")
+            # Show specific warnings based on issues
+            critical_issues = any("not detect face" in issue.lower() or "processing error" in issue.lower() for issue in data['compliance_issues'])
+            if critical_issues:
+                st.warning("**⚠️ Please upload a clear front-facing photo where your face is clearly visible**")
+            
+        else:
+            st.success("✅ **All compliance checks passed!** Your photo meets the basic DV Lottery requirements.")
+
+        # Compliance Dashboard
+        st.subheader("📊 Measurements Dashboard")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            head_status = "✅ PASS" if data['head_compliant'] else "❌ FAIL"
+            st.metric("Head Height", f"{int(data['head_ratio']*100)}%")
+            st.write(head_status)
+            st.progress(min(max(data['head_ratio'] / HEAD_MAX_RATIO, 0), 1.0))
             
         with col2:
-            if st.button("🔧 Auto-Adjust Head to Chin", use_container_width=True, type="primary"):
-                with st.spinner("🔄 Applying auto-adjustment..."):
-                    try:
-                        bg_removed = data['bg_removed']
-                        processed, head_info, compliance_issues = process_dv_photo_adjusted(bg_removed)
-                        processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
-                        
-                        head_compliant = HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
-                        eye_compliant = EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO
-                        needs_fix = not (head_compliant and eye_compliant)
-                        
-                        st.session_state.processed_data = {
-                            'orig': data['orig'],
-                            'processed': processed,
-                            'processed_with_lines': processed_with_lines,
-                            'head_info': head_info,
-                            'head_ratio': head_ratio,
-                            'eye_ratio': eye_ratio,
-                            'needs_fix': needs_fix,
-                            'head_compliant': head_compliant,
-                            'eye_compliant': eye_compliant,
-                            'bg_removed': data['bg_removed'],
-                            'is_adjusted': True,
-                            'compliance_issues': compliance_issues
-                        }
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Adjustment failed: {str(e)}")
-        
-        if data['head_info'].get('is_baby', False):
-            st.info("👶 **Baby photo tip:** Make sure the baby's face is clearly visible and looking directly at the camera")
+            eye_status = "✅ PASS" if data['eye_compliant'] else "❌ FAIL"
+            st.metric("Eye Position", f"{int(data['eye_ratio']*100)}%")
+            st.write(eye_status)
+            st.progress(min(max(data['eye_ratio'] / EYE_MAX_RATIO, 0), 1.0))
+            
+        with col3:
+            # Only show overall compliant if no compliance issues and measurements are good
+            overall_compliant = not data['needs_fix'] and not data['compliance_issues']
+            overall_status = "✅ COMPLIANT" if overall_compliant else "❌ NEEDS FIXING"
+            st.metric("Overall Status", overall_status)
+            if overall_compliant:
+                st.success("🎉 Perfect! Your photo meets all requirements!")
+            else:
+                st.error("⚠️ Photo needs adjustment or replacement.")
 
-    # Download Section - ONLY SHOW IF NO COMPLIANCE ISSUES
-    if not data['compliance_issues']:
-        st.subheader("📥 Download Corrected Photo")
+        # Fix Section - ALWAYS SHOW FIX BUTTON if there are measurement issues
+        if data['needs_fix']:
+            st.subheader("🛠️ Photo Correction")
+            
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                issues = []
+                if not data['head_compliant']:
+                    issues.append("Head height out of range")
+                if not data['eye_compliant']:
+                    issues.append("Eye position out of range")
+                
+                st.warning(f"**Measurement Issues:** - {' | '.join(issues)}")
+                
+            with col2:
+                if st.button("🔧 Auto-Adjust Head to Chin", use_container_width=True, type="primary"):
+                    with st.spinner("🔄 Applying auto-adjustment..."):
+                        try:
+                            bg_removed = data['bg_removed']
+                            processed, head_info, compliance_issues = process_dv_photo_adjusted(bg_removed)
+                            processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
+                            
+                            head_compliant = HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
+                            eye_compliant = EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO
+                            needs_fix = not (head_compliant and eye_compliant)
+                            
+                            st.session_state.processed_data = {
+                                'orig': data['orig'],
+                                'processed': processed,
+                                'processed_with_lines': processed_with_lines,
+                                'head_info': head_info,
+                                'head_ratio': head_ratio,
+                                'eye_ratio': eye_ratio,
+                                'needs_fix': needs_fix,
+                                'head_compliant': head_compliant,
+                                'eye_compliant': eye_compliant,
+                                'bg_removed': data['bg_removed'],
+                                'is_adjusted': True,
+                                'compliance_issues': compliance_issues
+                            }
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Adjustment failed: {str(e)}")
+            
+            if data['head_info'].get('is_baby', False):
+                st.info("👶 **Baby photo tip:** Make sure the baby's face is clearly visible and looking directly at the camera")
+
+        # Download Section - ONLY SHOW IF NO COMPLIANCE ISSUES
+        if not data['compliance_issues']:
+            st.subheader("📥 Download Corrected Photo")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                buf = io.BytesIO()
+                data['processed'].save(buf, format="JPEG", quality=95)
+                st.download_button(
+                    label="⬇️ Download (No Guidelines)",
+                    data=buf.getvalue(),
+                    file_name="dv_lottery_photo.jpg",
+                    mime="image/jpeg",
+                    use_container_width=True
+                )
+            
+            with col2:
+                buf_with_guides = io.BytesIO()
+                data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
+                st.download_button(
+                    label="⬇️ Download with Guidelines",
+                    data=buf_with_guides.getvalue(),
+                    file_name="dv_lottery_photo_with_guides.jpg",
+                    mime="image/jpeg",
+                    use_container_width=True
+                )
+        else:
+            st.warning("**⚠️ Cannot download - Please upload a new photo that meets all requirements**")
+
+    else:
+        # Welcome screen for upload tab
+        st.markdown("""
+        ## 📤 Upload Your Photo
+        
+        **Get started by uploading your photo above!**
+        
+        This tool will:
+        - ✅ Automatically remove background
+        - ✅ Resize to 600×600 pixels  
+        - ✅ Check all DV Lottery requirements
+        - ✅ Show measurement guidelines
+        - ✅ Auto-adjust head and eye positions
+        - ✅ Provide compliance report
+        
+        **or use the 📷 Camera Guide tab to take a new photo with alignment guides!**
+        """)
+
+with tab2:
+    st.header("📷 DV Lottery Camera Guide")
+    
+    # Instructions
+    st.markdown("""
+    ## 🎯 Live Camera Guide for Perfect DV Lottery Photos
+    
+    **How to use:**
+    1. **Allow camera access** when prompted
+    2. **Position your face** inside the green oval
+    3. **Align your eyes** with the green horizontal band
+    4. **Wait for "ALIGNED" message**
+    5. **Click "Capture Photo"** when ready
+    6. **Process the photo** in the upload tab
+    
+    ### 📐 Alignment Guides:
+    - **Green Oval**: Position your head within this outline
+    - **Green Band**: Align your eyes with this horizontal guide (56%-69% from top)
+    - **Status Text**: Shows when you're perfectly aligned
+    """)
+    
+    # WebRTC configuration
+    RTC_CONFIGURATION = RTCConfiguration({
+        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+    })
+    
+    # Create two columns for camera and controls
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # WebRTC streamer
+        webrtc_ctx = webrtc_streamer(
+            key="dv-camera",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            video_processor_factory=VideoProcessor,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+    
+    with col2:
+        st.subheader("Camera Controls")
+        
+        # Capture button
+        if st.button("📸 Capture Photo", use_container_width=True, type="primary", key="capture"):
+            if webrtc_ctx.state.playing:
+                # Get the latest frame from queue
+                try:
+                    current_frame = st.session_state.camera_processor.frame_queue.get_nowait()
+                    st.session_state.camera_processor.capture_photo(current_frame)
+                    st.success("✅ Photo captured successfully!")
+                except queue.Empty:
+                    st.warning("⚠️ No frame available. Please wait for camera to initialize.")
+            else:
+                st.error("❌ Camera not active. Please start the camera first.")
+        
+        st.markdown("---")
+        st.subheader("Next Steps")
+        
+        if st.button("🖼️ View & Process Captured Photo", use_container_width=True, key="view"):
+            captured_img = st.session_state.camera_processor.get_captured_image()
+            if captured_img is not None:
+                # Convert to PIL and store in session state for upload tab
+                pil_image = Image.fromarray(cv2.cvtColor(captured_img, cv2.COLOR_BGR2RGB))
+                st.session_state.captured_from_camera = pil_image
+                st.success("✅ Photo ready for processing! Switch to the 'Upload Photo' tab.")
+            else:
+                st.warning("No photo captured yet. Please capture a photo first.")
+    
+    # Display captured photo if available
+    captured_img = st.session_state.camera_processor.get_captured_image()
+    if captured_img is not None:
+        st.subheader("📸 Your Captured Photo")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            buf = io.BytesIO()
-            data['processed'].save(buf, format="JPEG", quality=95)
-            st.download_button(
-                label="⬇️ Download (No Guidelines)",
-                data=buf.getvalue(),
-                file_name="dv_lottery_photo.jpg",
-                mime="image/jpeg",
-                use_container_width=True
-            )
+            st.image(captured_img, channels="BGR", 
+                    caption="Captured Photo with DV Guides", use_column_width=True)
         
         with col2:
-            buf_with_guides = io.BytesIO()
-            data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
+            # Convert to PIL for download
+            pil_image = Image.fromarray(
+                cv2.cvtColor(captured_img, cv2.COLOR_BGR2RGB)
+            )
+            
+            # Download button
+            buf = io.BytesIO()
+            pil_image.save(buf, format="JPEG", quality=95)
+            
             st.download_button(
-                label="⬇️ Download with Guidelines",
-                data=buf_with_guides.getvalue(),
+                label="💾 Download Photo with Guides",
+                data=buf.getvalue(),
                 file_name="dv_lottery_photo_with_guides.jpg",
                 mime="image/jpeg",
                 use_container_width=True
             )
-    else:
-        st.warning("**⚠️ Cannot download - Please upload a new photo that meets all requirements**")
-
-else:
-    # Welcome screen
-    st.markdown("""
-    ## 🎯 Welcome to DV Lottery Photo Editor
-    
-    This tool helps you create perfectly compliant photos for the Diversity Visa Lottery application.
-    
-    ### 🚀 How it works:
-    1. **Upload** your photo
-    2. **Automatic** background removal and resizing
-    3. **Compliance check** for all DV requirements
-    4. **Press Fix Button** for head-to-chin auto-adjustment
-    5. **Download** your ready-to-use DV photo
-    
-    ### 🔍 Compliance Checks:
-    - ✅ Face direction and positioning
-    - ✅ Eye visibility and openness  
-    - ✅ Neutral facial expression
-    - ✅ Hair not covering eyes or face
-    - ✅ Image quality and lighting
-    - ✅ Head and eye measurements
-    
-    ### 👶 Baby Photos Supported!
-    - Special detection for infant facial features
-    - Adjusted proportions for baby photos
-    - Extra head top protection
-    
-    **👆 Upload your photo above to get started!**
-    """)
-    
-    # Clear session state
-    if 'processed_data' in st.session_state:
-        del st.session_state.processed_data
-    if 'last_upload' in st.session_state:
-        del st.session_state.last_upload
+            
+            if st.button("🔄 Capture New Photo", use_container_width=True, key="new_capture"):
+                st.session_state.camera_processor.captured_image = None
+                st.rerun()
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
+st.markdown("*DV Lottery Photo Editor | Complete solution with camera guide & compliance checking*")
+
+# Clear session state when switching between modes
+if 'last_upload' in st.session_state and st.session_state.last_upload == "camera_capture":
+    if 'processed_data' in st.session_state:
+        del st.session_state.processed_data
