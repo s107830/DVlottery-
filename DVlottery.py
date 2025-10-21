@@ -110,39 +110,6 @@ def check_image_quality(cv_img):
         
         issues = []
 
-# ---------------------- ADDITIONAL HAIR REFINEMENT ----------------------
-def refine_hair_edges(img_pil, original_img_pil):
-    """Preserve fine hair details using texture and edge blending"""
-    try:
-        img_np = np.array(img_pil)
-        orig_np = np.array(original_img_pil)
-        if img_np.shape != orig_np.shape:
-            orig_np = np.array(original_img_pil.resize(img_pil.size, Image.LANCZOS))
-        gray = cv2.cvtColor(orig_np, cv2.COLOR_RGB2GRAY)
-        kernel = cv2.getGaborKernel((15, 15), 3, np.pi/4, 2*np.pi/3, 0.5, 0, ktype=cv2.CV_32F)
-        hair_texture = cv2.filter2D(gray, cv2.CV_8UC3, kernel)
-        _, hair_mask = cv2.threshold(hair_texture, 30, 255, cv2.THRESH_BINARY)
-        hair_mask = cv2.GaussianBlur(hair_mask, (5, 5), 1.0)
-        hair_mask_norm = hair_mask.astype(np.float32) / 255.0
-        hair_mask_3d = np.stack([hair_mask_norm] * 3, axis=-1)
-        result_np = img_np.astype(np.float32) * (1 - hair_mask_3d * 0.2) + orig_np.astype(np.float32) * (hair_mask_3d * 0.2)
-        result_np = np.clip(result_np, 0, 255).astype(np.uint8)
-        return Image.fromarray(result_np)
-    except:
-        return img_pil
-
-
-
-
-
-
-
-
-
-
-
-
-
 
         
         # Less sensitive blur detection (reduced from 100 to 50)
@@ -742,4 +709,5 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
+
 
