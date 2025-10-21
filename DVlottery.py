@@ -104,10 +104,10 @@ def enhanced_remove_background(img_pil, preserve_hair=True):
             
             # Step 5: Combine edge information with texture analysis
             edge_weight = edges_original.astype(np.float32) / 255.0
-            combined_hair_map = hair_probability * 0.7 + edge_weight * 0.3
+            combined_hair_map = hair_probability * 0.1 + edge_weight * 0.1
             
             # Step 6: Create soft transition mask for hair
-            hair_soft_mask = np.zeros_like(alpha_mask, dtype=np.uint8)
+            #hair_soft_mask = np.zeros_like(alpha_mask, dtype=np.uint8)
             
             # Threshold for hair detection
             hair_threshold = 0.1
@@ -847,6 +847,7 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with enhanced hair preservation and comprehensive compliance checking*")
+
 
 
 
