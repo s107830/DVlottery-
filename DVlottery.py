@@ -20,29 +20,6 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
 
-# ---------------------- CLEAN & SHARP BACKGROUND REMOVAL ----------------------
-def remove_background(img_pil):
-    """Clean background removal without any blur or edge processing"""
-    try:
-        # Convert PIL to bytes
-        b = io.BytesIO()
-        img_pil.save(b, format="PNG")
-        img_bytes = b.getvalue()
-        
-        # Simple removal - no complex processing that causes blur
-        fg_bytes = remove(img_bytes)
-        fg = Image.open(io.BytesIO(fg_bytes)).convert("RGBA")
-        
-        # Clean white background composite - no processing
-        white_bg = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        result = Image.alpha_composite(white_bg, fg).convert("RGB")
-        
-        return result
-        
-    except Exception as e:
-        st.warning(f"Background removal failed: {str(e)}. Using original image.")
-        return img_pil
-
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
     """Check if face is directly facing camera"""
@@ -224,6 +201,17 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     except Exception as e:
         st.error(f"Landmark processing error: {str(e)}")
         raise
+
+def remove_background(img_pil):
+    try:
+        b = io.BytesIO()
+        img_pil.save(b, format="PNG")
+        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        return Image.alpha_composite(white, fg).convert("RGB")
+    except Exception as e:
+        st.warning(f"Background removal failed: {str(e)}. Using original image.")
+        return img_pil
 
 def is_likely_baby_photo(cv_img, landmarks):
     """More accurate baby detection with stricter thresholds"""
@@ -548,13 +536,13 @@ if uploaded_file:
     
     with col1:
         st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_container_width=True)
+        st.image(data['orig'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
         status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_container_width=True)
+        st.image(data['processed_with_lines'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
         if data['is_adjusted']:
             st.success("✅ Auto-adjustment applied")
@@ -718,4 +706,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Sharp hair edges*")
+st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
