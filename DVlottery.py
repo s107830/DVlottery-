@@ -202,27 +202,30 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         st.error(f"Landmark processing error: {str(e)}")
         raise
 
-def remove_background(img_pil):
-    try:
-        # Convert image to RGBA and remove background
-        b = io.BytesIO()
-        img_pil.save(b, format="PNG")
-        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+def refine_hair_edges(img_pil):
+    """Remove blurry halo around hair edges after rembg"""
+    np_img = np.array(img_pil.convert("RGBA"))
+    alpha = np_img[:, :, 3]
 
-        # --- Fix blue outline using white matte compositing ---
-        np_img = np.array(fg)
+    # --- Step 1: Strengthen hair edges ---
+    # Slightly expand alpha (to include thin hair strands)
+    kernel = np.ones((2, 2), np.uint8)
+    alpha_dilated = cv2.dilate(alpha, kernel, iterations=1)
 
-        # If transparency exists, blend with white background manually
-        if np_img.shape[2] == 4:
-            alpha = np_img[:, :, 3].astype(float) / 255.0
-            # White background (255, 255, 255)
-            for c in range(3):
-                np_img[:, :, c] = (alpha * np_img[:, :, c] + (1 - alpha) * 255)
-            np_img = np_img[:, :, :3]  # Drop alpha channel
+    # --- Step 2: Reduce transparency noise ---
+    alpha_clean = cv2.GaussianBlur(alpha_dilated, (3, 3), 0)
+    np_img[:, :, 3] = alpha_clean
 
-        # Optional: small morphological operation to remove edge halo
-        kernel = np.ones((2, 2), np.uint8)
-        np_img = cv2.morphologyEx(np_img.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+    # --- Step 3: Remove gray halo by compositing on pure white ---
+    alpha_norm = alpha_clean.astype(float) / 255.0
+    for c in range(3):
+        np_img[:, :, c] = (alpha_norm * np_img[:, :, c] + (1 - alpha_norm) * 255)
+
+    # --- Step 4: Slight edge sharpening for hair strands ---
+    sharp = cv2.detailEnhance(np_img[:, :, :3].astype(np.uint8), sigma_s=10, sigma_r=0.15)
+
+    return Image.fromarray(sharp)
+
 
         # Convert back to PIL
         cleaned = Image.fromarray(np_img.astype(np.uint8))
@@ -725,4 +728,5 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
+
 
