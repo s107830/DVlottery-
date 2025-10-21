@@ -203,40 +203,52 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         raise
 
 def remove_background(img_pil):
+    from PIL import Image, ImageEnhance
+import cv2
+import numpy as np
+from rembg import remove
+import io
+
+def remove_background(img_pil):
     try:
+        # Step 1: Preprocess the image to enhance contrast and sharpness
+        img_pil_enhanced = ImageEnhance.Contrast(img_pil).enhance(1.2)  # Increase contrast
+        img_pil_enhanced = ImageEnhance.Sharpness(img_pil_enhanced).enhance(1.3)  # Increase sharpness
+
+        # Step 2: Convert PIL image to bytes for rembg
         b = io.BytesIO()
-        img_pil.save(b, format="PNG")
-        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+        img_pil_enhanced.save(b, format="PNG")
+        img_data = b.getvalue()
+
+        # Step 3: Use rembg with post-processing to improve hair segmentation
+        output_data = remove(
+            img_data,
+            alpha_matting=True,  # Enable alpha matting for better edge handling
+            alpha_matting_foreground_threshold=240,  # Adjust for better foreground detection
+            alpha_matting_background_threshold=10,   # Adjust for better background detection
+            alpha_matting_erode_size=10,             # Erode to clean up edges
+            post_process_mask=True                   # Enable mask post-processing
+        )
+
+        # Step 4: Convert rembg output to PIL image
+        fg = Image.open(io.BytesIO(output_data)).convert("RGBA")
+
+        # Step 5: Post-process the alpha channel to refine hair edges
+        fg_np = np.array(fg)
+        alpha = fg_np[:, :, 3]  # Extract alpha channel
+        alpha = cv2.GaussianBlur(alpha, (5, 5), 0)  # Smooth alpha channel to reduce jagged edges
+        alpha = cv2.threshold(alpha, 200, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]  # Binarize for cleaner edges
+        fg_np[:, :, 3] = alpha  # Update alpha channel
+        fg = Image.fromarray(fg_np)
+
+        # Step 6: Composite with a white background
         white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        return Image.alpha_composite(white, fg).convert("RGB")
+        result = Image.alpha_composite(white, fg).convert("RGB")
+
+        return result
     except Exception as e:
         st.warning(f"Background removal failed: {str(e)}. Using original image.")
-        return img_pil
-
-def is_likely_baby_photo(cv_img, landmarks):
-    """More accurate baby detection with stricter thresholds"""
-    try:
-        h, w = cv_img.shape[:2]
-        left_eye = landmarks.landmark[33]
-        right_eye = landmarks.landmark[263]
-        nose_tip = landmarks.landmark[1]
-        chin = landmarks.landmark[152]
-        
-        eye_distance = abs(left_eye.x - right_eye.x) * w
-        face_height = (chin.y - landmarks.landmark[10].y) * h
-        
-        # More accurate ratios for baby detection
-        eye_to_face_ratio = eye_distance / face_height
-        forehead_to_face_ratio = (landmarks.landmark[10].y - landmarks.landmark[151].y) / face_height
-        
-        # Stricter thresholds to reduce false positives
-        is_baby = (eye_to_face_ratio > 0.35 and forehead_to_face_ratio > 0.45)
-        
-        return is_baby
-    except:
-        return False
-
-# ---------------------- CORE PROCESSING (updated with compliance checks) ----------------------
+        return img_pil# ---------------------- CORE PROCESSING (updated with compliance checks) ----------------------
 def process_dv_photo_initial(img_pil):
     try:
         cv_img = np.array(img_pil)
