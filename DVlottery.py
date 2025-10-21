@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 import numpy as np
 import cv2
 import io
@@ -21,34 +21,50 @@ mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
 
 # ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
-def remove_background_clean(img_pil):
-    """Improved background removal with clean edges"""
+def remove_background_safe(img_pil):
+    """Safe background removal with fallback"""
     try:
         # Convert to RGB if needed
         if img_pil.mode != 'RGB':
             img_pil = img_pil.convert('RGB')
             
-        # Remove background
+        # Get original image info
+        original_size = img_pil.size
+        
+        # Remove background with error handling
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
-        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+        result_bytes = remove(b.getvalue())
         
-        # Create clean white background
+        if result_bytes is None:
+            raise Exception("Background removal returned None")
+            
+        fg = Image.open(io.BytesIO(result_bytes)).convert("RGBA")
+        
+        # Check if background removal actually worked
+        if fg.size != original_size:
+            st.warning("Background removal may not have worked properly, using original image")
+            return img_pil
+            
+        # Simple composite with white background
         white_bg = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        
-        # Use the alpha channel as mask for clean compositing
-        r, g, b, alpha = fg.split()
-        
-        # Enhance the alpha channel to remove semi-transparent edges
-        alpha = alpha.point(lambda x: 255 if x > 50 else 0)  # Threshold to remove semi-transparency
-        
-        # Composite with clean edges
-        clean_fg = Image.merge("RGBA", (r, g, b, alpha))
-        result = Image.alpha_composite(white_bg, clean_fg).convert("RGB")
+        result = Image.alpha_composite(white_bg, fg).convert("RGB")
         
         return result
     except Exception as e:
         st.warning(f"Background removal failed: {str(e)}. Using original image.")
+        return img_pil
+
+def remove_background_conservative(img_pil):
+    """Conservative background removal - only remove if it improves the image"""
+    try:
+        # For now, let's skip background removal entirely to avoid issues
+        # We'll just ensure the image is properly formatted
+        if img_pil.mode != 'RGB':
+            img_pil = img_pil.convert('RGB')
+        return img_pil
+    except Exception as e:
+        st.warning(f"Background processing failed: {str(e)}")
         return img_pil
 
 # ---------------------- COMPLIANCE CHECKERS ----------------------
@@ -61,7 +77,6 @@ def check_facing_direction(landmarks, img_w, img_h):
         right_face = landmarks.landmark[454]  # Right face contour
 
         # Calculate face width and nose position
-        face_width = abs(right_face.x - left_face.x) * img_w
         nose_center_ratio = (nose_tip.x - left_face.x) / (right_face.x - left_face.x)
 
         # Face should be centered (nose around 0.5 ratio)
@@ -242,32 +257,32 @@ def is_likely_baby_photo(cv_img, landmarks):
     except:
         return False
 
-# ---------------------- CORE PROCESSING (updated with compliance checks) ----------------------
+# ---------------------- CORE PROCESSING (SIMPLIFIED AND IMPROVED) ----------------------
 def process_dv_photo_initial(img_pil):
     try:
-        cv_img = np.array(img_pil)
-        if len(cv_img.shape) == 2:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-        elif cv_img.shape[2] == 4:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
+        # Convert to RGB if needed
+        if img_pil.mode != 'RGB':
+            img_pil = img_pil.convert('RGB')
             
+        # Convert to numpy for processing
+        cv_img = np.array(img_pil)
         h, w = cv_img.shape[:2]
 
-        # Simple resize to 600x600 without face adjustment
+        # Simple resize to 600x600 without face adjustment - use high quality resampling
         scale_factor = MIN_SIZE / max(h, w)
         new_w = int(w * scale_factor)
         new_h = int(h * scale_factor)
         
-        # Use higher quality resampling
-        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        # Use PIL for better quality resizing
+        resized_pil = img_pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
         
         # Create canvas and center the image
-        canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
+        canvas = Image.new('RGB', (MIN_SIZE, MIN_SIZE), (255, 255, 255))
         y_offset = (MIN_SIZE - new_h) // 2
         x_offset = (MIN_SIZE - new_w) // 2
-        canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        canvas.paste(resized_pil, (x_offset, y_offset))
         
-        result = Image.fromarray(canvas)
+        result = canvas
         
         # Try to get face landmarks for display and compliance checking
         try:
@@ -312,12 +327,11 @@ def process_dv_photo_initial(img_pil):
 
 def process_dv_photo_adjusted(img_pil):
     try:
-        cv_img = np.array(img_pil)
-        if len(cv_img.shape) == 2:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-        elif cv_img.shape[2] == 4:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
+        # Convert to RGB if needed
+        if img_pil.mode != 'RGB':
+            img_pil = img_pil.convert('RGB')
             
+        cv_img = np.array(img_pil)
         h, w = cv_img.shape[:2]
         landmarks = get_face_landmarks(cv_img)
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
@@ -336,14 +350,19 @@ def process_dv_photo_adjusted(img_pil):
         new_w = int(w * scale_factor)
         new_h = int(h * scale_factor)
         
-        # Use better interpolation for resizing
-        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        # Use PIL for better quality resizing
+        resized_pil = img_pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        resized_cv = np.array(resized_pil)
         
-        canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
-        landmarks_resized = get_face_landmarks(resized)
+        # Create canvas
+        canvas = Image.new('RGB', (MIN_SIZE, MIN_SIZE), (255, 255, 255))
+        
+        # Get face positions in resized image
+        landmarks_resized = get_face_landmarks(resized_cv)
         top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
         head_height = chin_y - top_y
         
+        # Calculate positioning
         target_eye_min = MIN_SIZE - int(MIN_SIZE * EYE_MAX_RATIO)
         target_eye_max = MIN_SIZE - int(MIN_SIZE * EYE_MIN_RATIO)
         target_eye_y = (target_eye_min + target_eye_max) // 2
@@ -364,34 +383,17 @@ def process_dv_photo_adjusted(img_pil):
             
         x_offset = (MIN_SIZE - new_w) // 2
         
-        y_start_dst = max(0, y_offset)
-        y_end_dst = min(MIN_SIZE, y_offset + new_h)
-        x_start_dst = max(0, x_offset)
-        x_end_dst = min(MIN_SIZE, x_offset + new_w)
-        
-        y_start_src = max(0, -y_offset)
-        y_end_src = min(new_h, MIN_SIZE - y_offset)
-        x_start_src = max(0, -x_offset)
-        x_end_src = min(new_w, MIN_SIZE - x_offset)
-        
-        if (y_start_dst < y_end_dst and x_start_dst < x_end_dst and 
-            y_start_src < y_end_src and x_start_src < x_end_src):
-            canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
-                resized[y_start_src:y_end_src, x_start_src:x_end_src]
-        else:
-            y_offset = max(0, (MIN_SIZE - new_h) // 2)
-            x_offset = max(0, (MIN_SIZE - new_w) // 2)
-            if y_offset + new_h <= MIN_SIZE and x_offset + new_w <= MIN_SIZE:
-                canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        # Paste the resized image onto canvas
+        canvas.paste(resized_pil, (x_offset, y_offset))
         
         final_top_y = top_y + y_offset
         final_chin_y = chin_y + y_offset
         final_eye_y = eye_y + y_offset
         
-        result = Image.fromarray(canvas)
+        result = canvas
         
-        # Apply mild sharpening only if needed
-        result = ImageEnhance.Sharpness(result).enhance(1.05)
+        # Apply very mild sharpening
+        result = ImageEnhance.Sharpness(result).enhance(1.02)
         
         head_info = {
             "top_y": final_top_y,
@@ -403,7 +405,7 @@ def process_dv_photo_adjusted(img_pil):
         }
         
         # Run compliance checks on adjusted image
-        compliance_issues = comprehensive_compliance_check(resized, landmarks_resized, head_info)
+        compliance_issues = comprehensive_compliance_check(resized_cv, landmarks_resized, head_info)
         
         return result, head_info, compliance_issues
         
@@ -491,7 +493,8 @@ with st.sidebar:
     """)
 
     st.header("⚙️ Settings")
-    enhance_quality = st.checkbox("Enhance Image Quality", value=True)
+    use_background_removal = st.checkbox("Use Background Removal", value=False, 
+                                        help="Try this if your photo has a busy background. May not work well with all images.")
 
 # Main content
 uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"])
@@ -504,8 +507,12 @@ if uploaded_file:
         
         with st.spinner("🔄 Processing photo and checking compliance..."):
             try:
-                # Use the improved background removal
-                bg_removed = remove_background_clean(orig)
+                # Use conservative background removal based on user choice
+                if use_background_removal:
+                    bg_removed = remove_background_safe(orig)
+                else:
+                    bg_removed = remove_background_conservative(orig)
+                    
                 processed, head_info, compliance_issues = process_dv_photo_initial(bg_removed)
                 processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
                 
@@ -709,4 +716,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Now with improved edge quality and compliance checking*")
+st.markdown("*DV Lottery Photo Editor | Now with improved image quality and optional background removal*")
