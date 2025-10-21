@@ -115,7 +115,7 @@ def enhanced_remove_background(img_pil, preserve_hair=True):
             
             # Apply Gaussian blur for soft edges
             hair_soft_mask[hair_regions] = 255
-            hair_soft_mask = cv2.GaussianBlur(hair_soft_mask, (9, 9), 2.0)
+            hair_soft_mask = cv2.GaussianBlur(hair_soft_mask, (5, 5), 1.5)
             
             # Step 7: Combine with original alpha mask
             final_alpha = np.maximum(alpha_mask, hair_soft_mask)
@@ -847,3 +847,4 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with enhanced hair preservation and comprehensive compliance checking*")
+
