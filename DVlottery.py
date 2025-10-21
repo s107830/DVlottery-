@@ -20,48 +20,6 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
 
-# ---------------------- BACKGROUND REMOVAL & HAIR EDGE REFINEMENT ----------------------
-def refine_hair_edges(img_pil):
-    """Refine hair edges and remove gray/blur halo after rembg"""
-    np_img = np.array(img_pil.convert("RGBA"))
-    alpha = np_img[:, :, 3]
-
-    # --- Step 1: Expand alpha to include fine hair strands ---
-    kernel = np.ones((2, 2), np.uint8)
-    alpha_dilated = cv2.dilate(alpha, kernel, iterations=1)
-
-    # --- Step 2: Smooth alpha edges ---
-    alpha_clean = cv2.GaussianBlur(alpha_dilated, (3, 3), 0)
-    np_img[:, :, 3] = alpha_clean
-
-    # --- Step 3: Composite onto pure white background to remove gray halo ---
-    alpha_norm = alpha_clean.astype(float) / 255.0
-    for c in range(3):
-        np_img[:, :, c] = (alpha_norm * np_img[:, :, c] + (1 - alpha_norm) * 255)
-
-    # --- Step 4: Light detail enhancement for sharper hair edges ---
-    sharp = cv2.detailEnhance(np_img[:, :, :3].astype(np.uint8), sigma_s=10, sigma_r=0.15)
-
-    return Image.fromarray(sharp)
-
-def remove_background(img_pil):
-    """Remove background using rembg and then refine edges"""
-    try:
-        # Convert to bytes
-        b = io.BytesIO()
-        img_pil.save(b, format="PNG")
-
-        # Run background remover
-        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-
-        # Refine hair and edge halos
-        refined = refine_hair_edges(fg)
-
-        return refined
-    except Exception as e:
-        st.warning(f"⚠️ Background removal failed: {str(e)}. Using original image.")
-        return img_pil
-
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
     """Check if face is directly facing camera"""
@@ -243,6 +201,17 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     except Exception as e:
         st.error(f"Landmark processing error: {str(e)}")
         raise
+
+def remove_background(img_pil):
+    try:
+        b = io.BytesIO()
+        img_pil.save(b, format="PNG")
+        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        return Image.alpha_composite(white, fg).convert("RGB")
+    except Exception as e:
+        st.warning(f"Background removal failed: {str(e)}. Using original image.")
+        return img_pil
 
 def is_likely_baby_photo(cv_img, landmarks):
     """More accurate baby detection with stricter thresholds"""
@@ -508,11 +477,6 @@ with st.sidebar:
     - **No glasses**, headwear, or uniforms
     - **Hair**: Not covering face or eyes
     
-    ### ✨ New Features:
-    - **Enhanced background removal** with hair edge refinement
-    - **Gray halo removal** for cleaner cutouts
-    - **Natural hair strand preservation**
-    
     ### 👶 Baby Photos:
     - Works best with clear front-facing photos
     - Auto-detects baby facial features
@@ -533,7 +497,6 @@ if uploaded_file:
         
         with st.spinner("🔄 Processing photo and checking compliance..."):
             try:
-                # Use the improved background removal with hair edge refinement
                 bg_removed = remove_background(orig)
                 processed, head_info, compliance_issues = process_dv_photo_initial(bg_removed)
                 processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
@@ -573,17 +536,16 @@ if uploaded_file:
     
     with col1:
         st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_container_width=True)
+        st.image(data['orig'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
-        status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Processed Photo"
+        status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_container_width=True)
+        st.image(data['processed_with_lines'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
         if data['is_adjusted']:
             st.success("✅ Auto-adjustment applied")
-        st.success("✨ Background removed & hair edges refined")
 
     # COMPLIANCE ISSUES DISPLAY
     st.subheader("🔍 Compliance Check Results")
@@ -715,16 +677,10 @@ else:
     
     ### 🚀 How it works:
     1. **Upload** your photo
-    2. **Automatic** background removal and hair edge refinement
+    2. **Automatic** background removal and resizing
     3. **Compliance check** for all DV requirements
     4. **Press Fix Button** for head-to-chin auto-adjustment
     5. **Download** your ready-to-use DV photo
-    
-    ### ✨ New Enhanced Features:
-    - **Advanced background removal** with hair edge refinement
-    - **Gray halo elimination** for cleaner cutouts
-    - **Natural hair strand preservation**
-    - **Enhanced edge quality** for professional results
     
     ### 🔍 Compliance Checks:
     - ✅ Face direction and positioning
@@ -750,4 +706,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Now with enhanced background removal & hair edge refinement*")
+st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
