@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 import io
 import mediapipe as mp
-from rembg import remove
+from rembg import remove, new_session
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -19,6 +19,66 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
+
+# ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
+def remove_background(img_pil):
+    """Improved background removal with better hair edge detection"""
+    try:
+        # Convert PIL to bytes
+        b = io.BytesIO()
+        img_pil.save(b, format="PNG")
+        img_bytes = b.getvalue()
+        
+        # Create session with human segmentation model
+        session = new_session("u2net_human_seg")
+        
+        # Remove background with optimized parameters for hair
+        fg_bytes = remove(
+            img_bytes,
+            session=session,
+            post_process_mask=True,
+            alpha_matting=True,  # Enable alpha matting for smooth edges
+            alpha_matting_foreground_threshold=240,
+            alpha_matting_background_threshold=10,
+            alpha_matting_erode_size=10  # Better for hair details
+        )
+        
+        fg = Image.open(io.BytesIO(fg_bytes)).convert("RGBA")
+        
+        # Post-process for smoother hair edges
+        fg_array = np.array(fg)
+        
+        if fg_array.shape[2] == 4:  # RGBA image
+            alpha = fg_array[:, :, 3]
+            
+            # Apply Gaussian blur to alpha channel for smoother edges
+            alpha_blurred = cv2.GaussianBlur(alpha, (3, 3), 0)
+            
+            # Use morphological operations to clean up the mask
+            kernel = np.ones((2, 2), np.uint8)
+            alpha_cleaned = cv2.morphologyEx(alpha_blurred, cv2.MORPH_CLOSE, kernel)
+            alpha_cleaned = cv2.morphologyEx(alpha_cleaned, cv2.MORPH_OPEN, kernel)
+            
+            # Combine original alpha with cleaned version for better hair details
+            # Preserve strong edges while smoothing weak ones
+            edges = cv2.Canny(alpha, 50, 150)
+            edges = cv2.dilate(edges, np.ones((1, 1), np.uint8), iterations=1)
+            
+            # Where we have strong edges, keep original alpha; elsewhere use smoothed
+            final_alpha = np.where(edges > 0, alpha, alpha_cleaned)
+            
+            fg_array[:, :, 3] = final_alpha
+            fg = Image.fromarray(fg_array)
+        
+        # Composite with white background
+        white_bg = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        result = Image.alpha_composite(white_bg, fg).convert("RGB")
+        
+        return result
+        
+    except Exception as e:
+        st.warning(f"Background removal failed: {str(e)}. Using original image.")
+        return img_pil
 
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
@@ -201,17 +261,6 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     except Exception as e:
         st.error(f"Landmark processing error: {str(e)}")
         raise
-
-def remove_background(img_pil):
-    try:
-        b = io.BytesIO()
-        img_pil.save(b, format="PNG")
-        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        return Image.alpha_composite(white, fg).convert("RGB")
-    except Exception as e:
-        st.warning(f"Background removal failed: {str(e)}. Using original image.")
-        return img_pil
 
 def is_likely_baby_photo(cv_img, landmarks):
     """More accurate baby detection with stricter thresholds"""
@@ -536,13 +585,13 @@ if uploaded_file:
     
     with col1:
         st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
+        st.image(data['orig'], use_container_width=True)
         st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
         status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
+        st.image(data['processed_with_lines'], use_container_width=True)
         st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
         if data['is_adjusted']:
             st.success("✅ Auto-adjustment applied")
@@ -706,4 +755,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
+st.markdown("*DV Lottery Photo Editor | Now with improved hair cutting quality*")
