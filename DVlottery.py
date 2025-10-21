@@ -204,16 +204,34 @@ def get_head_eye_positions(landmarks, img_h, img_w):
 
 def remove_background(img_pil):
     try:
+        # Convert image to RGBA and remove background
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        return Image.alpha_composite(white, fg).convert("RGB")
+
+        # --- Fix blue outline using white matte compositing ---
+        np_img = np.array(fg)
+
+        # If transparency exists, blend with white background manually
+        if np_img.shape[2] == 4:
+            alpha = np_img[:, :, 3].astype(float) / 255.0
+            # White background (255, 255, 255)
+            for c in range(3):
+                np_img[:, :, c] = (alpha * np_img[:, :, c] + (1 - alpha) * 255)
+            np_img = np_img[:, :, :3]  # Drop alpha channel
+
+        # Optional: small morphological operation to remove edge halo
+        kernel = np.ones((2, 2), np.uint8)
+        np_img = cv2.morphologyEx(np_img.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+
+        # Convert back to PIL
+        cleaned = Image.fromarray(np_img.astype(np.uint8))
+
+        return cleaned
     except Exception as e:
         st.warning(f"Background removal failed: {str(e)}. Using original image.")
         return img_pil
 
-def is_likely_baby_photo(cv_img, landmarks):
     """More accurate baby detection with stricter thresholds"""
     try:
         h, w = cv_img.shape[:2]
@@ -707,3 +725,4 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
+
