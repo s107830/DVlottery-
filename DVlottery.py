@@ -66,9 +66,8 @@ def check_neutral_expression(landmarks):
         # Mouth landmarks
         mouth_top = landmarks.landmark[13]  # Upper lip
         mouth_bottom = landmarks.landmark[14]  # Lower lip
-        mouth_corners = [landmarks.landmark[78], landmarks.landmark[308]]  # Left and right corners
         
-        # Calculate mouth openness and smile indicators
+        # Calculate mouth openness
         mouth_openness = abs(mouth_top.y - mouth_bottom.y)
         
         # For neutral expression, mouth should be relatively closed
@@ -76,33 +75,23 @@ def check_neutral_expression(landmarks):
     except:
         return True
 
-def check_headwear_glasses(cv_img, landmarks):
-    """Check for potential headwear or glasses"""
+def check_hair_covering_eyes(landmarks, img_h, img_w):
+    """Check if hair is covering eyes or face"""
     try:
-        # Convert to HSV for better color analysis
-        hsv = cv2.cvtColor(cv_img, cv2.COLOR_RGB2HSV)
+        # Get eye region landmarks
+        left_eye_inner = landmarks.landmark[133]  # Left eye inner corner
+        left_eye_outer = landmarks.landmark[33]   # Left eye outer corner
+        right_eye_inner = landmarks.landmark[362] # Right eye inner corner
+        right_eye_outer = landmarks.landmark[263] # Right eye outer corner
         
-        # Check forehead region for unusual colors (potential headwear)
-        forehead_points = [
-            landmarks.landmark[10], landmarks.landmark[67], 
-            landmarks.landmark[69], landmarks.landmark[104]
-        ]
+        # Calculate eye region area
+        left_eye_width = abs(left_eye_outer.x - left_eye_inner.x) * img_w
+        right_eye_width = abs(right_eye_outer.x - right_eye_inner.x) * img_w
         
-        # Calculate forehead bounding box
-        forehead_x = [p.x * cv_img.shape[1] for p in forehead_points]
-        forehead_y = [p.y * cv_img.shape[0] for p in forehead_points]
+        # If eye region is too small, might be covered by hair
+        min_eye_width = 0.05 * img_w  # Eyes should be at least 5% of image width
         
-        forehead_roi = cv_img[int(min(forehead_y)):int(max(forehead_y)), 
-                             int(min(forehead_x)):int(max(forehead_x))]
-        
-        if forehead_roi.size > 0:
-            # Check for non-skin colors in forehead area
-            hsv_forehead = cv2.cvtColor(forehead_roi, cv2.COLOR_RGB2HSV)
-            skin_mask = cv2.inRange(hsv_forehead, (0, 30, 30), (25, 255, 255))
-            skin_ratio = np.sum(skin_mask > 0) / (skin_mask.size + 1e-6)
-            
-            return skin_ratio > 0.7  # If mostly skin-colored, probably no headwear
-        return True
+        return left_eye_width >= min_eye_width and right_eye_width >= min_eye_width
     except:
         return True
 
@@ -126,29 +115,6 @@ def check_image_quality(cv_img):
     except:
         return []
 
-def check_background_uniformity(cv_img):
-    """Check if background is plain/uniform"""
-    try:
-        # Analyze edges in the image corners (background areas)
-        gray = cv2.cvtColor(cv_img, cv2.COLOR_RGB2GRAY)
-        
-        # Check corners for uniformity
-        h, w = gray.shape
-        corner_size = min(h, w) // 4
-        corners = [
-            gray[:corner_size, :corner_size],  # Top-left
-            gray[:corner_size, -corner_size:], # Top-right
-            gray[-corner_size:, :corner_size], # Bottom-left
-            gray[-corner_size:, -corner_size:] # Bottom-right
-        ]
-        
-        corner_variance = [np.var(corner) for corner in corners]
-        avg_variance = np.mean(corner_variance)
-        
-        return avg_variance < 500  # Low variance indicates uniform background
-    except:
-        return True
-
 def comprehensive_compliance_check(cv_img, landmarks, head_info):
     """Run all compliance checks and return issues"""
     issues = []
@@ -157,29 +123,25 @@ def comprehensive_compliance_check(cv_img, landmarks, head_info):
     
     # 1. Face direction check
     if not check_facing_direction(landmarks, w, h):
-        issues.append("❌ Face not directly facing camera")
+        issues.append("❌ Face not directly facing camera - look straight ahead")
     
     # 2. Eyes check
     if not check_eyes_open(landmarks, h, w):
-        issues.append("❌ Eyes not fully open or visible")
+        issues.append("❌ Eyes not fully open or clearly visible")
     
     # 3. Expression check
     if not check_neutral_expression(landmarks):
-        issues.append("❌ Non-neutral facial expression detected")
+        issues.append("❌ Non-neutral facial expression detected - maintain neutral expression")
     
-    # 4. Headwear/glasses check
-    if not check_headwear_glasses(cv_img, landmarks):
-        issues.append("❌ Possible headwear or glasses detected")
+    # 4. Hair covering eyes check
+    if not check_hair_covering_eyes(landmarks, h, w):
+        issues.append("❌ Hair may be covering eyes or face")
     
     # 5. Image quality check
     quality_issues = check_image_quality(cv_img)
     issues.extend([f"❌ {issue}" for issue in quality_issues])
     
-    # 6. Background check
-    if not check_background_uniformity(cv_img):
-        issues.append("❌ Background may not be plain/uniform")
-    
-    # 7. Head and eye position compliance (existing checks)
+    # 6. Head and eye position compliance (existing checks)
     head_ratio = head_info["head_height"] / head_info["canvas_size"]
     eye_ratio = (head_info["canvas_size"] - head_info["eye_y"]) / head_info["canvas_size"]
     
@@ -219,7 +181,7 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         right_eye_y = int(landmarks.landmark[263].y * img_h)
         eye_y = (left_eye_y + right_eye_y) // 2
         
-        hair_buffer = int((chin_y - top_y) * 0.5)
+        hair_buffer = int((chin_y - top_y) * 0.3)  # Reduced buffer for better adult detection
         top_y = max(0, top_y - hair_buffer)
         
         return top_y, chin_y, eye_y
@@ -239,6 +201,7 @@ def remove_background(img_pil):
         return img_pil
 
 def is_likely_baby_photo(cv_img, landmarks):
+    """More accurate baby detection with stricter thresholds"""
     try:
         h, w = cv_img.shape[:2]
         left_eye = landmarks.landmark[33]
@@ -249,10 +212,14 @@ def is_likely_baby_photo(cv_img, landmarks):
         eye_distance = abs(left_eye.x - right_eye.x) * w
         face_height = (chin.y - landmarks.landmark[10].y) * h
         
+        # More accurate ratios for baby detection
         eye_to_face_ratio = eye_distance / face_height
         forehead_to_face_ratio = (landmarks.landmark[10].y - landmarks.landmark[151].y) / face_height
         
-        return eye_to_face_ratio > 0.3 or forehead_to_face_ratio > 0.4
+        # Stricter thresholds to reduce false positives
+        is_baby = (eye_to_face_ratio > 0.35 and forehead_to_face_ratio > 0.45)
+        
+        return is_baby
     except:
         return False
 
@@ -467,6 +434,7 @@ def draw_guidelines(img, head_info):
         
         draw.text((w-150, eye_y-15), f"Eyes: {int(eye_ratio*100)}%", fill=eye_color)
 
+        # Only show baby detection if it's actually a baby (with stricter detection)
         if is_baby:
             draw.text((10, 10), "👶 Baby Photo Detected", fill="orange")
 
@@ -494,6 +462,7 @@ with st.sidebar:
     - **Face**: Directly facing camera, neutral expression
     - **Eyes**: Both open and clearly visible
     - **No glasses**, headwear, or uniforms
+    - **Hair**: Not covering face or eyes
     
     ### 👶 Baby Photos:
     - Works best with clear front-facing photos
@@ -545,7 +514,7 @@ if uploaded_file:
     # Get data from session state
     data = st.session_state.processed_data
     
-    # Show baby detection info
+    # Show baby detection info only if it's actually a baby
     if data['head_info'].get('is_baby', False):
         st.info("👶 **Baby photo detected** - Using special adjustments for infant facial proportions")
     
@@ -569,19 +538,15 @@ if uploaded_file:
     st.subheader("🔍 Compliance Check Results")
     
     if data['compliance_issues']:
-        st.error("❌ **Issues Found:**")
+        st.error("❌ **Issues Found - Please upload a new photo:**")
         for issue in data['compliance_issues']:
             st.write(f"- {issue}")
         
-        st.warning("""
-        **⚠️ Please upload a new photo that meets these requirements:**
-        - Face directly facing camera with neutral expression
-        - Both eyes open and clearly visible  
-        - No glasses, headwear, or uniforms
-        - Plain white background
-        - Good lighting and focus
-        - No shadows or reflections
-        """)
+        # Show specific warnings based on issues
+        critical_issues = any("not detect face" in issue.lower() or "processing error" in issue.lower() for issue in data['compliance_issues'])
+        if critical_issues:
+            st.warning("**⚠️ Please upload a clear front-facing photo where your face is clearly visible**")
+        
     else:
         st.success("✅ **All compliance checks passed!** Your photo meets the basic DV Lottery requirements.")
 
@@ -603,14 +568,16 @@ if uploaded_file:
         st.progress(min(max(data['eye_ratio'] / EYE_MAX_RATIO, 0), 1.0))
         
     with col3:
-        overall_status = "✅ COMPLIANT" if not data['needs_fix'] and not data['compliance_issues'] else "❌ NEEDS FIXING"
+        # Only show overall compliant if no compliance issues and measurements are good
+        overall_compliant = not data['needs_fix'] and not data['compliance_issues']
+        overall_status = "✅ COMPLIANT" if overall_compliant else "❌ NEEDS FIXING"
         st.metric("Overall Status", overall_status)
-        if not data['needs_fix'] and not data['compliance_issues']:
+        if overall_compliant:
             st.success("🎉 Perfect! Your photo meets all requirements!")
         else:
-            st.error("⚠️ Photo needs adjustment.")
+            st.error("⚠️ Photo needs adjustment or replacement.")
 
-    # Fix Section
+    # Fix Section - ALWAYS SHOW FIX BUTTON if there are measurement issues
     if data['needs_fix']:
         st.subheader("🛠️ Photo Correction")
         
@@ -658,32 +625,35 @@ if uploaded_file:
         if data['head_info'].get('is_baby', False):
             st.info("👶 **Baby photo tip:** Make sure the baby's face is clearly visible and looking directly at the camera")
 
-    # Download Section
-    st.subheader("📥 Download Corrected Photo")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        buf = io.BytesIO()
-        data['processed'].save(buf, format="JPEG", quality=95)
-        st.download_button(
-            label="⬇️ Download (No Guidelines)",
-            data=buf.getvalue(),
-            file_name="dv_lottery_photo.jpg",
-            mime="image/jpeg",
-            use_container_width=True
-        )
-    
-    with col2:
-        buf_with_guides = io.BytesIO()
-        data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
-        st.download_button(
-            label="⬇️ Download with Guidelines",
-            data=buf_with_guides.getvalue(),
-            file_name="dv_lottery_photo_with_guides.jpg",
-            mime="image/jpeg",
-            use_container_width=True
-        )
+    # Download Section - ONLY SHOW IF NO COMPLIANCE ISSUES
+    if not data['compliance_issues']:
+        st.subheader("📥 Download Corrected Photo")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            buf = io.BytesIO()
+            data['processed'].save(buf, format="JPEG", quality=95)
+            st.download_button(
+                label="⬇️ Download (No Guidelines)",
+                data=buf.getvalue(),
+                file_name="dv_lottery_photo.jpg",
+                mime="image/jpeg",
+                use_container_width=True
+            )
+        
+        with col2:
+            buf_with_guides = io.BytesIO()
+            data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
+            st.download_button(
+                label="⬇️ Download with Guidelines",
+                data=buf_with_guides.getvalue(),
+                file_name="dv_lottery_photo_with_guides.jpg",
+                mime="image/jpeg",
+                use_container_width=True
+            )
+    else:
+        st.warning("**⚠️ Cannot download - Please upload a new photo that meets all requirements**")
 
 else:
     # Welcome screen
@@ -699,13 +669,13 @@ else:
     4. **Press Fix Button** for head-to-chin auto-adjustment
     5. **Download** your ready-to-use DV photo
     
-    ### 🔍 New Compliance Checks:
+    ### 🔍 Compliance Checks:
     - ✅ Face direction and positioning
     - ✅ Eye visibility and openness  
     - ✅ Neutral facial expression
-    - ✅ No glasses or headwear detection
+    - ✅ Hair not covering eyes or face
     - ✅ Image quality and lighting
-    - ✅ Background uniformity
+    - ✅ Head and eye measurements
     
     ### 👶 Baby Photos Supported!
     - Special detection for infant facial features
