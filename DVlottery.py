@@ -61,7 +61,7 @@ def enhanced_remove_background(img_pil, preserve_hair=True):
         #hair_probability = np.zeros_like(alpha_mask, dtype=np.float32)
         
         # Region around the head for hair detection
-        head_region = (closed_mask > 0).astype(np.uint8) * 255
+        #head_region = (closed_mask > 0).astype(np.uint8) * 255
         contours, _ = cv2.findContours(head_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         if contours:
@@ -96,7 +96,7 @@ def enhanced_remove_background(img_pil, preserve_hair=True):
                 filtered = cv2.filter2D(channel_data, cv2.CV_32F, gabor_kernel)
                 
                 # Normalize and add to hair probability
-                hair_probability += np.abs(filtered) * hair_search_region
+                #hair_probability += np.abs(filtered) * hair_search_region
             
             # Normalize probability map
             if hair_probability.max() > 0:
@@ -847,6 +847,7 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with enhanced hair preservation and comprehensive compliance checking*")
+
 
 
 
