@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance
 import numpy as np
 import cv2
 import io
@@ -19,133 +19,6 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
-
-# ---------------------- ENHANCED BACKGROUND REMOVAL WITH HAIR PRESERVATION ----------------------
-def enhanced_remove_background(img_pil, preserve_hair=True):
-    """
-    Enhanced background removal with better hair preservation
-    """
-    try:
-        if not preserve_hair:
-            # Simple removal without hair preservation
-            b = io.BytesIO()
-            img_pil.save(b, format="PNG")
-            fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-            #white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-            return Image.alpha_composite(white, fg).convert("RGB")
-        
-        # Convert to numpy array for processing
-        img_array = np.array(img_pil)
-        
-        # Step 1: Initial background removal with rembg
-        b = io.BytesIO()
-        img_pil.save(b, format="PNG")
-        initial_removed = remove(b.getvalue())
-        fg_pil = Image.open(io.BytesIO(initial_removed)).convert("RGBA")
-        fg_array = np.array(fg_pil)
-        
-        # Extract alpha mask from rembg result
-        alpha_mask = fg_array[:, :, 3]
-        
-        # Step 2: Morphological operations to improve hair regions
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        closed_mask = cv2.morphologyEx(alpha_mask, cv2.MORPH_CLOSE, kernel)
-        
-        # Step 3: Edge-aware hair region detection
-        #gray_original = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        
-        # Detect edges in original image
-        #edges_original = cv2.Canny(gray_original, 50, 150)
-        
-        # Create hair probability map
-        #hair_probability = np.zeros_like(alpha_mask, dtype=np.float32)
-        
-        # Region around the head for hair detection
-        #head_region = (closed_mask > 0).astype(np.uint8) * 255
-        contours, _ = cv2.findContours(head_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if contours:
-            main_contour = max(contours, key=cv2.contourArea)
-            x, y, w, h = cv2.boundingRect(main_contour)
-            
-            # Expand search area for hair
-            expand_pixels = 50
-            x_start = max(0, x - expand_pixels)
-            y_start = max(0, y - expand_pixels)
-            x_end = min(img_array.shape[1], x + w + expand_pixels)
-            y_end = min(img_array.shape[0], y + h + expand_pixels)
-            
-            # Focus hair detection on upper and side regions
-            #hair_search_region = np.zeros_like(alpha_mask)
-            hair_search_region[y_start:y_start+expand_pixels, x_start:x_end] = 1  # Top
-            hair_search_region[y_start:y_end, x_start:x_start+expand_pixels] = 1  # Left
-            hair_search_region[y_start:y_end, x_end-expand_pixels:x_end] = 1      # Right
-            
-            # Step 4: Texture analysis for hair detection
-            for channel in range(3):
-                channel_data = img_array[:, :, channel].astype(np.float32)
-                
-                # Gabor-like filter simulation for texture
-                kernel_size = 9
-                sigma = 2.0
-                theta = np.pi / 4
-                lambd = 10.0
-                gamma = 0.5
-                
-                gabor_kernel = cv2.getGaborKernel((kernel_size, kernel_size), sigma, theta, lambd, gamma)
-                filtered = cv2.filter2D(channel_data, cv2.CV_32F, gabor_kernel)
-                
-                # Normalize and add to hair probability
-                #hair_probability += np.abs(filtered) * hair_search_region
-            
-            # Normalize probability map
-            if hair_probability.max() > 0:
-                hair_probability = hair_probability / hair_probability.max()
-            
-            # Step 5: Combine edge information with texture analysis
-            edge_weight = edges_original.astype(np.float32) / 255.0
-            combined_hair_map = hair_probability * 0.1 + edge_weight * 0.1
-            
-            # Step 6: Create soft transition mask for hair
-            #hair_soft_mask = np.zeros_like(alpha_mask, dtype=np.uint8)
-            
-            # Threshold for hair detection
-            hair_threshold = 0.1
-            hair_regions = (combined_hair_map > hair_threshold) & (hair_search_region > 0)
-            
-            # Apply Gaussian blur for soft edges
-            hair_soft_mask[hair_regions] = 255
-            #hair_soft_mask = cv2.GaussianBlur(hair_soft_mask, (5, 5), 1.5)
-            
-            # Step 7: Combine with original alpha mask
-            #final_alpha = np.maximum(alpha_mask, hair_soft_mask)
-            
-            # Step 8: Apply final mask
-            result_array = img_array.copy()
-            result_array[:, :, 3] = final_alpha
-            
-            # Convert back to PIL
-            result_pil = Image.fromarray(result_array, 'RGBA')
-            
-            # Composite with white background
-            white_bg = Image.new("RGBA", result_pil.size, (255, 255, 255, 255))
-            final_result = Image.alpha_composite(white_bg, result_pil).convert("RGB")
-            
-            return final_result
-            
-        else:
-            # Fallback to simple removal if no contours found
-            white = Image.new("RGBA", fg_pil.size, (255, 255, 255, 255))
-            return Image.alpha_composite(white, fg_pil).convert("RGB")
-            
-    except Exception as e:
-        st.warning(f"Enhanced background removal failed: {str(e)}. Using standard removal.")
-        # Fallback to simple removal
-        b = io.BytesIO()
-        img_pil.save(b, format="PNG")
-        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        return Image.alpha_composite(white, fg).convert("RGB")
 
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
@@ -329,6 +202,17 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         st.error(f"Landmark processing error: {str(e)}")
         raise
 
+def remove_background(img_pil):
+    try:
+        b = io.BytesIO()
+        img_pil.save(b, format="PNG")
+        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        return Image.alpha_composite(white, fg).convert("RGB")
+    except Exception as e:
+        st.warning(f"Background removal failed: {str(e)}. Using original image.")
+        return img_pil
+
 def is_likely_baby_photo(cv_img, landmarks):
     """More accurate baby detection with stricter thresholds"""
     try:
@@ -352,8 +236,8 @@ def is_likely_baby_photo(cv_img, landmarks):
     except:
         return False
 
-# ---------------------- CORE PROCESSING (updated with enhanced background removal) ----------------------
-def process_dv_photo_initial(img_pil, preserve_hair=True):
+# ---------------------- CORE PROCESSING (updated with compliance checks) ----------------------
+def process_dv_photo_initial(img_pil):
     try:
         cv_img = np.array(img_pil)
         if len(cv_img.shape) == 2:
@@ -363,17 +247,11 @@ def process_dv_photo_initial(img_pil, preserve_hair=True):
 
         h, w = cv_img.shape[:2]
         
-        # Enhanced background removal with hair preservation
-        bg_removed = enhanced_remove_background(img_pil, preserve_hair)
-        
-        # Convert back to CV for processing
-        cv_img_processed = np.array(bg_removed)
-        
         # Simple resize to 600x600 without face adjustment
         scale_factor = MIN_SIZE / max(h, w)
         new_w = int(w * scale_factor)
         new_h = int(h * scale_factor)
-        resized = cv2.resize(cv_img_processed, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
         
         # Create canvas and center the image
         canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
@@ -418,12 +296,12 @@ def process_dv_photo_initial(img_pil, preserve_hair=True):
             }
             compliance_issues = ["❌ Cannot detect face properly - ensure clear front-facing photo"]
         
-        return result, head_info, compliance_issues, bg_removed
+        return result, head_info, compliance_issues
     except Exception as e:
         st.error(f"Initial photo processing error: {str(e)}")
-        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE, "is_baby": False}, ["❌ Processing error - try another photo"], img_pil
+        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE, "is_baby": False}, ["❌ Processing error - try another photo"]
 
-def process_dv_photo_adjusted(img_pil, preserve_hair=True):
+def process_dv_photo_adjusted(img_pil):
     try:
         cv_img = np.array(img_pil)
         if len(cv_img.shape) == 2:
@@ -505,9 +383,6 @@ def process_dv_photo_adjusted(img_pil, preserve_hair=True):
         
         result = Image.fromarray(canvas)
         result = ImageEnhance.Sharpness(result).enhance(1.1)
-        
-        # Apply enhanced background removal to final result
-        result = enhanced_remove_background(result, preserve_hair)
 
         head_info = {
             "top_y": final_top_y,
@@ -606,15 +481,10 @@ with st.sidebar:
     - Works best with clear front-facing photos
     - Auto-detects baby facial features
     - Uses special adjustments for baby proportions
-    
-    ### 💇 Hair Preservation:
-    - **ON**: Preserves fine hair details (Recommended)
-    - **OFF**: Standard background removal
     """)
     
     st.header("⚙️ Settings")
     enhance_quality = st.checkbox("Enhance Image Quality", value=True)
-    preserve_hair = st.checkbox("Preserve Hair Details", value=True, help="Better hair preservation with natural edges")
 
 # Main content
 uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"])
@@ -625,9 +495,10 @@ if uploaded_file:
         st.session_state.last_upload = uploaded_file.name
         orig = Image.open(uploaded_file).convert("RGB")
         
-        with st.spinner("🔄 Processing photo with enhanced hair preservation..."):
+        with st.spinner("🔄 Processing photo and checking compliance..."):
             try:
-                processed, head_info, compliance_issues, bg_removed = process_dv_photo_initial(orig, preserve_hair)
+                bg_removed = remove_background(orig)
+                processed, head_info, compliance_issues = process_dv_photo_initial(bg_removed)
                 processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
                 
                 head_compliant = HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
@@ -646,8 +517,7 @@ if uploaded_file:
                     'eye_compliant': eye_compliant,
                     'bg_removed': bg_removed,
                     'is_adjusted': False,
-                    'compliance_issues': compliance_issues,
-                    'preserve_hair': preserve_hair
+                    'compliance_issues': compliance_issues
                 }
             except Exception as e:
                 st.error(f"❌ Error processing image: {str(e)}")
@@ -666,20 +536,16 @@ if uploaded_file:
     
     with col1:
         st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_container_width=True)
+        st.image(data['orig'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
         status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_container_width=True)
+        st.image(data['processed_with_lines'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
         if data['is_adjusted']:
             st.success("✅ Auto-adjustment applied")
-        
-        # Show hair preservation status
-        hair_status = "✅ ON" if data.get('preserve_hair', True) else "❌ OFF"
-        st.info(f"**Hair Preservation:** {hair_status}")
 
     # COMPLIANCE ISSUES DISPLAY
     st.subheader("🔍 Compliance Check Results")
@@ -741,9 +607,10 @@ if uploaded_file:
             
         with col2:
             if st.button("🔧 Auto-Adjust Head to Chin", use_container_width=True, type="primary"):
-                with st.spinner("🔄 Applying auto-adjustment with hair preservation..."):
+                with st.spinner("🔄 Applying auto-adjustment..."):
                     try:
-                        processed, head_info, compliance_issues = process_dv_photo_adjusted(data['orig'], preserve_hair)
+                        bg_removed = data['bg_removed']
+                        processed, head_info, compliance_issues = process_dv_photo_adjusted(bg_removed)
                         processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
                         
                         head_compliant = HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
@@ -762,8 +629,7 @@ if uploaded_file:
                             'eye_compliant': eye_compliant,
                             'bg_removed': data['bg_removed'],
                             'is_adjusted': True,
-                            'compliance_issues': compliance_issues,
-                            'preserve_hair': preserve_hair
+                            'compliance_issues': compliance_issues
                         }
                         st.rerun()
                     except Exception as e:
@@ -829,12 +695,6 @@ else:
     - Adjusted proportions for baby photos
     - Extra head top protection
     
-    ### 💇 Enhanced Hair Preservation
-    - **Preserves fine hair details** and natural hair flow
-    - **Soft edges** for realistic hair boundaries
-    - **Texture analysis** to detect hair strands
-    - **Toggle on/off** in settings
-    
     **👆 Upload your photo above to get started!**
     """)
     
@@ -846,11 +706,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Now with enhanced hair preservation and comprehensive compliance checking*")
-
-
-
-
-
-
-
+st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
