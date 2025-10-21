@@ -31,7 +31,7 @@ def enhanced_remove_background(img_pil, preserve_hair=True):
             b = io.BytesIO()
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+            #white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
             return Image.alpha_composite(white, fg).convert("RGB")
         
         # Convert to numpy array for processing
@@ -847,6 +847,7 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with enhanced hair preservation and comprehensive compliance checking*")
+
 
 
 
