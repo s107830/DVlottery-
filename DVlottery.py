@@ -52,13 +52,13 @@ def enhanced_remove_background(img_pil, preserve_hair=True):
         closed_mask = cv2.morphologyEx(alpha_mask, cv2.MORPH_CLOSE, kernel)
         
         # Step 3: Edge-aware hair region detection
-        gray_original = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        #gray_original = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         
         # Detect edges in original image
-        edges_original = cv2.Canny(gray_original, 50, 150)
+        #edges_original = cv2.Canny(gray_original, 50, 150)
         
         # Create hair probability map
-        hair_probability = np.zeros_like(alpha_mask, dtype=np.float32)
+        #hair_probability = np.zeros_like(alpha_mask, dtype=np.float32)
         
         # Region around the head for hair detection
         head_region = (closed_mask > 0).astype(np.uint8) * 255
@@ -76,7 +76,7 @@ def enhanced_remove_background(img_pil, preserve_hair=True):
             y_end = min(img_array.shape[0], y + h + expand_pixels)
             
             # Focus hair detection on upper and side regions
-            hair_search_region = np.zeros_like(alpha_mask)
+            #hair_search_region = np.zeros_like(alpha_mask)
             hair_search_region[y_start:y_start+expand_pixels, x_start:x_end] = 1  # Top
             hair_search_region[y_start:y_end, x_start:x_start+expand_pixels] = 1  # Left
             hair_search_region[y_start:y_end, x_end-expand_pixels:x_end] = 1      # Right
@@ -847,6 +847,7 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with enhanced hair preservation and comprehensive compliance checking*")
+
 
 
 
