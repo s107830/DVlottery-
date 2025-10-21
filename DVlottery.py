@@ -20,20 +20,20 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
 
-# ---------------------- SIMPLE & CLEAN BACKGROUND REMOVAL ----------------------
+# ---------------------- CLEAN & SHARP BACKGROUND REMOVAL ----------------------
 def remove_background(img_pil):
-    """Simple and clean background removal without outlines"""
+    """Clean background removal without any blur or edge processing"""
     try:
         # Convert PIL to bytes
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
         img_bytes = b.getvalue()
         
-        # Simple removal without complex parameters that cause outlines
+        # Simple removal - no complex processing that causes blur
         fg_bytes = remove(img_bytes)
         fg = Image.open(io.BytesIO(fg_bytes)).convert("RGBA")
         
-        # Clean simple white background composite
+        # Clean white background composite - no processing
         white_bg = Image.new("RGBA", fg.size, (255, 255, 255, 255))
         result = Image.alpha_composite(white_bg, fg).convert("RGB")
         
@@ -718,4 +718,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*DV Lottery Photo Editor | Clean background removal*")
+st.markdown("*DV Lottery Photo Editor | Sharp hair edges*")
