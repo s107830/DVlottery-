@@ -202,208 +202,6 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         st.error(f"Landmark processing error: {str(e)}")
         raise
 
-def remove_background(img_pil):
-    from PIL import Image, ImageEnhance
-import cv2
-import numpy as np
-from rembg import remove
-import io
-
-def remove_background(img_pil):
-    try:
-        # Step 1: Preprocess the image to enhance contrast and sharpness
-        img_pil_enhanced = ImageEnhance.Contrast(img_pil).enhance(1.2)  # Increase contrast
-        img_pil_enhanced = ImageEnhance.Sharpness(img_pil_enhanced).enhance(1.3)  # Increase sharpness
-
-        # Step 2: Convert PIL image to bytes for rembg
-        b = io.BytesIO()
-        img_pil_enhanced.save(b, format="PNG")
-        img_data = b.getvalue()
-
-        # Step 3: Use rembg with post-processing to improve hair segmentation
-        output_data = remove(
-            img_data,
-            alpha_matting=True,  # Enable alpha matting for better edge handling
-            alpha_matting_foreground_threshold=240,  # Adjust for better foreground detection
-            alpha_matting_background_threshold=10,   # Adjust for better background detection
-            alpha_matting_erode_size=10,             # Erode to clean up edges
-            post_process_mask=True                   # Enable mask post-processing
-        )
-
-        # Step 4: Convert rembg output to PIL image
-        fg = Image.open(io.BytesIO(output_data)).convert("RGBA")
-
-        # Step 5: Post-process the alpha channel to refine hair edges
-        fg_np = np.array(fg)
-        alpha = fg_np[:, :, 3]  # Extract alpha channel
-        alpha = cv2.GaussianBlur(alpha, (5, 5), 0)  # Smooth alpha channel to reduce jagged edges
-        alpha = cv2.threshold(alpha, 200, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]  # Binarize for cleaner edges
-        fg_np[:, :, 3] = alpha  # Update alpha channel
-        fg = Image.fromarray(fg_np)
-
-        # Step 6: Composite with a white background
-        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        result = Image.alpha_composite(white, fg).convert("RGB")
-
-        return result
-    except Exception as e:
-        st.warning(f"Background removal failed: {str(e)}. Using original image.")
-        return img_pil# ---------------------- CORE PROCESSING (updated with compliance checks) ----------------------
-def process_dv_photo_initial(img_pil):
-    try:
-        cv_img = np.array(img_pil)
-        if len(cv_img.shape) == 2:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-        elif cv_img.shape[2] == 4:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
-
-        h, w = cv_img.shape[:2]
-        
-        # Simple resize to 600x600 without face adjustment
-        scale_factor = MIN_SIZE / max(h, w)
-        new_w = int(w * scale_factor)
-        new_h = int(h * scale_factor)
-        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        
-        # Create canvas and center the image
-        canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
-        y_offset = (MIN_SIZE - new_h) // 2
-        x_offset = (MIN_SIZE - new_w) // 2
-        canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
-        
-        result = Image.fromarray(canvas)
-        
-        # Try to get face landmarks for display and compliance checking
-        try:
-            landmarks = get_face_landmarks(cv_img)
-            top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
-            head_height = chin_y - top_y
-            
-            # Scale positions for the resized image
-            final_top_y = int(top_y * scale_factor) + y_offset
-            final_chin_y = int(chin_y * scale_factor) + y_offset
-            final_eye_y = int(eye_y * scale_factor) + y_offset
-            
-            head_info = {
-                "top_y": final_top_y,
-                "chin_y": final_chin_y,
-                "eye_y": final_eye_y,
-                "head_height": head_height * scale_factor,
-                "canvas_size": MIN_SIZE,
-                "is_baby": is_likely_baby_photo(cv_img, landmarks)
-            }
-            
-            # Run compliance checks
-            compliance_issues = comprehensive_compliance_check(cv_img, landmarks, head_info)
-            
-        except Exception as e:
-            # If face detection fails, use default values
-            head_info = {
-                "top_y": MIN_SIZE // 4,
-                "chin_y": MIN_SIZE * 3 // 4,
-                "eye_y": MIN_SIZE // 2,
-                "head_height": MIN_SIZE // 2,
-                "canvas_size": MIN_SIZE,
-                "is_baby": False
-            }
-            compliance_issues = ["❌ Cannot detect face properly - ensure clear front-facing photo"]
-        
-        return result, head_info, compliance_issues
-    except Exception as e:
-        st.error(f"Initial photo processing error: {str(e)}")
-        return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE, "is_baby": False}, ["❌ Processing error - try another photo"]
-
-def process_dv_photo_adjusted(img_pil):
-    try:
-        cv_img = np.array(img_pil)
-        if len(cv_img.shape) == 2:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-        elif cv_img.shape[2] == 4:
-            cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
-
-        h, w = cv_img.shape[:2]
-        landmarks = get_face_landmarks(cv_img)
-        top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
-        head_height = chin_y - top_y
-        
-        is_baby = is_likely_baby_photo(cv_img, landmarks)
-
-        if is_baby:
-            target_head_height = MIN_SIZE * 0.55
-            scale_factor = target_head_height / head_height
-            scale_factor = np.clip(scale_factor, 0.4, 2.5)
-        else:
-            target_head_height = MIN_SIZE * 0.6
-            scale_factor = target_head_height / head_height
-            scale_factor = np.clip(scale_factor, 0.3, 3.0)
-        
-        new_w = int(w * scale_factor)
-        new_h = int(h * scale_factor)
-        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-
-        canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
-
-        landmarks_resized = get_face_landmarks(resized)
-        top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
-        head_height = chin_y - top_y
-
-        target_eye_min = MIN_SIZE - int(MIN_SIZE * EYE_MAX_RATIO)
-        target_eye_max = MIN_SIZE - int(MIN_SIZE * EYE_MIN_RATIO)
-        target_eye_y = (target_eye_min + target_eye_max) // 2
-
-        y_offset = target_eye_y - eye_y
-        
-        if is_baby:
-            head_top_margin = 20
-            head_bottom_margin = 15
-        else:
-            head_top_margin = 10
-            head_bottom_margin = 10
-        
-        if top_y + y_offset < head_top_margin:
-            y_offset = -top_y + head_top_margin
-        
-        if chin_y + y_offset > MIN_SIZE - head_bottom_margin:
-            y_offset = MIN_SIZE - chin_y - head_bottom_margin
-
-        x_offset = (MIN_SIZE - new_w) // 2
-
-        y_start_dst = max(0, y_offset)
-        y_end_dst = min(MIN_SIZE, y_offset + new_h)
-        x_start_dst = max(0, x_offset)
-        x_end_dst = min(MIN_SIZE, x_offset + new_w)
-        
-        y_start_src = max(0, -y_offset)
-        y_end_src = min(new_h, MIN_SIZE - y_offset)
-        x_start_src = max(0, -x_offset)
-        x_end_src = min(new_w, MIN_SIZE - x_offset)
-
-        if (y_start_dst < y_end_dst and x_start_dst < x_end_dst and 
-            y_start_src < y_end_src and x_start_src < x_end_src):
-            
-            canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
-                resized[y_start_src:y_end_src, x_start_src:x_end_src]
-        else:
-            y_offset = max(0, (MIN_SIZE - new_h) // 2)
-            x_offset = max(0, (MIN_SIZE - new_w) // 2)
-            if y_offset + new_h <= MIN_SIZE and x_offset + new_w <= MIN_SIZE:
-                canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
-
-        final_top_y = top_y + y_offset
-        final_chin_y = chin_y + y_offset
-        final_eye_y = eye_y + y_offset
-        
-        result = Image.fromarray(canvas)
-        result = ImageEnhance.Sharpness(result).enhance(1.1)
-
-        head_info = {
-            "top_y": final_top_y,
-            "chin_y": final_chin_y,
-            "eye_y": final_eye_y,
-            "head_height": head_height,
-            "canvas_size": MIN_SIZE,
-            "is_baby": is_baby
-        }
         
         # Run compliance checks on adjusted image
         compliance_issues = comprehensive_compliance_check(resized, landmarks_resized, head_info)
@@ -467,6 +265,44 @@ def draw_guidelines(img, head_info):
     except Exception as e:
         st.error(f"Guideline drawing error: {str(e)}")
         return img, 0, 0
+
+def remove_background_grabcut(img_pil):
+    try:
+        # Convert PIL to OpenCV
+        img_np = np.array(img_pil)
+        img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        
+        # Initialize mask, background, and foreground models
+        mask = np.zeros(img_np.shape[:2], np.uint8)
+        bgd_model = np.zeros((1, 65), np.float64)
+        fgd_model = np.zeros((1, 65), np.float64)
+        
+        # Define a rectangle around the likely foreground (face + hair)
+        h, w = img_np.shape[:2]
+        rect = (50, 50, w - 100, h - 100)  # Adjust based on image size
+        
+        # Apply GrabCut
+        cv2.grabCut(img_np, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
+        
+        # Create mask where 0 and 2 are background, 1 and 3 are foreground
+        mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+        
+        # Apply mask to image
+        img_np = img_np * mask2[:, :, np.newaxis]
+        
+        # Convert back to RGBA
+        img_rgba = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGBA)
+        img_rgba[:, :, 3] = mask2 * 255
+        
+        # Composite with white background
+        fg = Image.fromarray(img_rgba)
+        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        result = Image.alpha_composite(white, fg).convert("RGB")
+        
+        return result
+    except Exception as e:
+        st.warning(f"GrabCut background removal failed: {str(e)}. Using original image.")
+        return img_pil
 
 # ---------------------- STREAMLIT UI ----------------------
 
