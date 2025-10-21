@@ -20,128 +20,6 @@ EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 mp_face_mesh = mp.solutions.face_mesh
 mp_face_detection = mp.solutions.face_detection
 
-# ---------------------- CAMERA LENS WITH GUIDES ----------------------
-def draw_camera_guides(image, landmarks=None):
-    """Draw real-time guides for head and shoulders positioning"""
-    h, w = image.shape[:2]
-    img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    pil_img = Image.fromarray(img_rgb)
-    draw = ImageDraw.Draw(pil_img)
-    
-    # Center of the image
-    center_x, center_y = w // 2, h // 2
-    
-    if landmarks:
-        try:
-            # Get face landmarks for real-time positioning
-            # Head circle (based on face detection)
-            nose = landmarks.landmark[1]
-            chin = landmarks.landmark[152]
-            left_face = landmarks.landmark[234]
-            right_face = landmarks.landmark[454]
-            
-            head_center_x = int(nose.x * w)
-            head_center_y = int((nose.y + chin.y) * h / 2)
-            head_radius = int(abs(left_face.x - right_face.x) * w * 0.8)
-            
-            # Draw head circle (green if well-positioned, yellow if needs adjustment)
-            head_color = "green" if abs(head_center_x - center_x) < w * 0.1 else "yellow"
-            draw.ellipse([
-                head_center_x - head_radius, head_center_y - head_radius,
-                head_center_x + head_radius, head_center_y + head_radius
-            ], outline=head_color, width=4)
-            
-            # Shoulders guide (estimated based on head position)
-            shoulders_y = head_center_y + head_radius * 1.5
-            shoulders_width = head_radius * 2.5
-            
-            # Draw shoulders line
-            draw.line([
-                center_x - shoulders_width, shoulders_y,
-                center_x + shoulders_width, shoulders_y
-            ], fill="blue", width=3)
-            
-            # Center alignment guide
-            draw.line([center_x, 0, center_x, h], fill="red", width=2)
-            draw.line([0, center_y, w, center_y], fill="red", width=2)
-            
-            # Position feedback text
-            if abs(head_center_x - center_x) > w * 0.1:
-                draw.text((10, 10), "↔️ Move to center", fill="yellow")
-            if head_center_y < h * 0.3:
-                draw.text((10, 30), "⬇️ Move closer", fill="yellow")
-            elif head_center_y > h * 0.7:
-                draw.text((10, 30), "⬆️ Move back", fill="yellow")
-            else:
-                draw.text((10, 10), "✅ Perfect position!", fill="green")
-                
-        except Exception as e:
-            # If landmark detection fails, show basic guides
-            pass
-    
-    # Always show basic framing guides
-    # Target head area circle
-    target_head_radius = min(w, h) // 4
-    draw.ellipse([
-        center_x - target_head_radius, center_y - target_head_radius,
-        center_x + target_head_radius, center_y + target_head_radius
-    ], outline="green", width=3, dash=(5, 5))
-    
-    # Shoulders area
-    shoulders_y = center_y + target_head_radius
-    draw.rectangle([
-        center_x - target_head_radius * 1.5, shoulders_y,
-        center_x + target_head_radius * 1.5, shoulders_y + target_head_radius
-    ], outline="blue", width=2, dash=(5, 5))
-    
-    # Instruction text
-    draw.text((10, h - 60), "📱 Position head in green circle", fill="white")
-    draw.text((10, h - 40), "📏 Shoulders should be in blue area", fill="white")
-    draw.text((10, h - 20), "🎯 Keep face centered on red lines", fill="white")
-    
-    return np.array(pil_img)
-
-def get_camera_photo():
-    """Capture photo from camera with real-time guides"""
-    st.markdown("### 📱 Camera Mode - Take Your Photo")
-    st.info("💡 **Instructions:** Position your head in the green circle and shoulders in the blue area. Make sure you're centered on the red lines.")
-    
-    # Camera input with real-time processing
-    camera_img = st.camera_input("Take a photo for DV Lottery", key="camera_capture")
-    
-    if camera_img is not None:
-        # Convert to OpenCV format
-        image = Image.open(camera_img)
-        cv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        # Try to detect face for real-time feedback
-        try:
-            with mp_face_mesh.FaceMesh(
-                static_image_mode=False,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.5
-            ) as face_mesh:
-                rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
-                results = face_mesh.process(rgb_image)
-                
-                if results.multi_face_landmarks:
-                    landmarks = results.multi_face_landmarks[0]
-                    # Create preview with guides
-                    preview_image = draw_camera_guides(cv_image, landmarks)
-                else:
-                    preview_image = draw_camera_guides(cv_image)
-                    
-                # Show preview
-                st.image(preview_image, caption="Photo Preview with Guides", use_column_width=True)
-                
-        except Exception as e:
-            preview_image = draw_camera_guides(cv_image)
-            st.image(preview_image, caption="Photo Preview with Guides", use_column_width=True)
-        
-        return image
-    return None
-
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
     """Check if face is directly facing camera"""
@@ -275,7 +153,7 @@ def comprehensive_compliance_check(cv_img, landmarks, head_info):
     
     return issues
 
-# ---------------------- EXISTING HELPERS ----------------------
+# ---------------------- EXISTING HELPERS (updated with compliance checks) ----------------------
 def get_face_landmarks(cv_img):
     try:
         with mp_face_mesh.FaceMesh(
@@ -345,7 +223,7 @@ def is_likely_baby_photo(cv_img, landmarks):
     except:
         return False
 
-# ---------------------- CORE PROCESSING ----------------------
+# ---------------------- CORE PROCESSING (updated with compliance checks) ----------------------
 def process_dv_photo_initial(img_pil):
     try:
         cv_img = np.array(img_pil)
@@ -510,7 +388,7 @@ def process_dv_photo_adjusted(img_pil):
         st.error(f"Photo adjustment error: {str(e)}")
         return img_pil, {"top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0, "canvas_size": MIN_SIZE, "is_baby": False}, ["❌ Adjustment error - try another photo"]
 
-# ---------------------- DRAW GUIDELINES ----------------------
+# ---------------------- EXISTING DRAW LINES FUNCTION ----------------------
 def draw_guidelines(img, head_info):
     try:
         draw = ImageDraw.Draw(img)
@@ -571,60 +449,38 @@ def draw_guidelines(img, head_info):
 with st.sidebar:
     st.header("📋 Instructions")
     st.markdown("""
-    1. **Choose** camera or upload mode
-    2. **Position** yourself using the guides
-    3. **Check** the compliance results  
-    4. **Fix** if measurements are out of range
-    5. **Download** your corrected photo
+    1. **Upload** a clear front-facing photo
+    2. **Check** the compliance results  
+    3. **Fix** if measurements are out of range
+    4. **Download** your corrected photo
     
-    ### 🎯 Camera Mode Features:
-    - **Real-time head circle guide** (green)
-    - **Shoulders positioning guide** (blue)  
-    - **Center alignment lines** (red)
-    - **Live positioning feedback**
-    
-    ### ✅ DV Lottery Requirements:
+    ### ✅ Requirements:
     - **Head Height**: 50% - 69% of photo
     - **Eye Position**: 56% - 69% from top
     - **Photo Size**: 600×600 pixels
     - **Background**: Plain white
-    - **Face**: Directly facing camera
-    - **Eyes**: Both open and visible
+    - **Face**: Directly facing camera, neutral expression
+    - **Eyes**: Both open and clearly visible
+    - **No glasses**, headwear, or uniforms
+    - **Hair**: Not covering face or eyes
+    
+    ### 👶 Baby Photos:
+    - Works best with clear front-facing photos
+    - Auto-detects baby facial features
+    - Uses special adjustments for baby proportions
     """)
+    
+    st.header("⚙️ Settings")
+    enhance_quality = st.checkbox("Enhance Image Quality", value=True)
 
-# Main content - Photo Input Selection
-st.subheader("📸 Choose Photo Input Method")
-
-input_method = st.radio(
-    "Select how you want to provide your photo:",
-    ["📱 Use Camera (Recommended)", "📁 Upload Existing Photo"],
-    horizontal=True
-)
-
-uploaded_file = None
-camera_photo = None
-
-if input_method == "📱 Use Camera (Recommended)":
-    camera_photo = get_camera_photo()
-    if camera_photo:
-        uploaded_file = camera_photo
-        # Store in session state to simulate file upload
-        st.session_state.camera_capture_used = True
-else:
-    uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"])
+# Main content
+uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
     # Initialize session state
-    if 'processed_data' not in st.session_state or st.session_state.get('last_upload') != str(uploaded_file):
-        st.session_state.last_upload = str(uploaded_file)
-        
-        # Handle camera photo vs uploaded file
-        if hasattr(uploaded_file, 'read'):
-            # It's a file uploader object
-            orig = Image.open(uploaded_file).convert("RGB")
-        else:
-            # It's a camera photo (PIL Image)
-            orig = uploaded_file
+    if 'processed_data' not in st.session_state or st.session_state.get('last_upload') != uploaded_file.name:
+        st.session_state.last_upload = uploaded_file.name
+        orig = Image.open(uploaded_file).convert("RGB")
         
         with st.spinner("🔄 Processing photo and checking compliance..."):
             try:
@@ -671,7 +527,7 @@ if uploaded_file:
         st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
-        status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Processed Photo"
+        status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
         st.image(data['processed_with_lines'], use_column_width=True)
         st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
@@ -793,4 +649,48 @@ if uploaded_file:
                 label="⬇️ Download with Guidelines",
                 data=buf_with_guides.getvalue(),
                 file_name="dv_lottery_photo_with_guides.jpg",
-                mime="
+                mime="image/jpeg",
+                use_container_width=True
+            )
+    else:
+        st.warning("**⚠️ Cannot download - Please upload a new photo that meets all requirements**")
+
+else:
+    # Welcome screen
+    st.markdown("""
+    ## 🎯 Welcome to DV Lottery Photo Editor
+    
+    This tool helps you create perfectly compliant photos for the Diversity Visa Lottery application.
+    
+    ### 🚀 How it works:
+    1. **Upload** your photo
+    2. **Automatic** background removal and resizing
+    3. **Compliance check** for all DV requirements
+    4. **Press Fix Button** for head-to-chin auto-adjustment
+    5. **Download** your ready-to-use DV photo
+    
+    ### 🔍 Compliance Checks:
+    - ✅ Face direction and positioning
+    - ✅ Eye visibility and openness  
+    - ✅ Neutral facial expression
+    - ✅ Hair not covering eyes or face
+    - ✅ Image quality and lighting
+    - ✅ Head and eye measurements
+    
+    ### 👶 Baby Photos Supported!
+    - Special detection for infant facial features
+    - Adjusted proportions for baby photos
+    - Extra head top protection
+    
+    **👆 Upload your photo above to get started!**
+    """)
+    
+    # Clear session state
+    if 'processed_data' in st.session_state:
+        del st.session_state.processed_data
+    if 'last_upload' in st.session_state:
+        del st.session_state.last_upload
+
+# Footer
+st.markdown("---")
+st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
