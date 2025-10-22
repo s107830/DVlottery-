@@ -1,8 +1,13 @@
 import os
+# Force CPU usage and reduce logging for Render compatibility
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
 import warnings
 warnings.filterwarnings('ignore')
 
-# Render-specific configuration
+# Your existing imports
 import streamlit as st
 from PIL import Image, ImageDraw, ImageEnhance
 import numpy as np
@@ -12,6 +17,7 @@ import mediapipe as mp
 from rembg import remove
 import signal
 
+# Rest of your existing code continues exactly as you have it...
 # Set environment variables for Render compatibility
 os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Force CPU usage
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce tensorflow logging
@@ -751,3 +757,4 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
+
