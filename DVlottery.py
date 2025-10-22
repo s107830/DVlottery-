@@ -195,20 +195,58 @@ def draw_guidelines(img_pil, head_info):
 
 # ---------------------- AUTO FIX ----------------------
 def auto_fix_photo(cv_img, head_info):
-    # Shift canvas so eye line is centered in range
+    # Get head top and chin positions
+    top_y = head_info["top_y"]
+    chin_y = head_info["chin_y"]
     eye_y = head_info["eye_y"]
-    desired_eye_y = int(MIN_SIZE - MIN_SIZE*0.625)
-    shift_y = desired_eye_y - eye_y
-    img_np = np.array(cv_img)
-    M = np.float32([[1,0,0],[0,1,shift_y]])
-    shifted = cv2.warpAffine(img_np, M, (img_np.shape[1], img_np.shape[0]), borderValue=(255,255,255))
-    return Image.fromarray(shifted)
+    
+    # Calculate current head height
+    current_head_height = chin_y - top_y
+    
+    # Calculate target head height based on DV Lottery requirements
+    target_head_height = int(MIN_SIZE * 0.59)  # Target 59% of image height
+    
+    # Calculate scale factor to match target head height
+    scale_factor = target_head_height / current_head_height
+    
+    # Get original image dimensions
+    h, w = cv_img.shape[:2]
+    
+    # Calculate new dimensions
+    new_w = int(w * scale_factor)
+    new_h = int(h * scale_factor)
+    
+    # Resize image
+    resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+    
+    # Create canvas
+    canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
+    
+    # Calculate position to place the resized image so chin is at bottom
+    # We want the chin to be near the bottom of the canvas
+    chin_y_scaled = int(chin_y * scale_factor)
+    y_offset = MIN_SIZE - chin_y_scaled - 20  # Leave 20px margin at bottom
+    
+    # Center horizontally
+    x_offset = (MIN_SIZE - new_w) // 2
+    
+    # Ensure the image fits within canvas
+    y1 = max(0, y_offset)
+    y2 = min(MIN_SIZE, y_offset + new_h)
+    x1 = max(0, x_offset)
+    x2 = min(MIN_SIZE, x_offset + new_w)
+    
+    # Place the resized image on canvas
+    if y1 < y2 and x1 < x2:
+        canvas[y1:y2, x1:x2] = resized[0:y2-y1, 0:x2-x1]
+    
+    return Image.fromarray(canvas)
 
 # ---------------------- STREAMLIT UI ----------------------
 st.sidebar.header("📋 Instructions")
 st.sidebar.markdown("""
 1. Upload a clear front-facing photo
-2. Check compliance results
+2. Check compliance results  
 3. Press fix button if measurements are out of range
 4. Download corrected photo
 """)
@@ -234,13 +272,25 @@ if uploaded_file:
             st.write(f"- {issue}")
         st.warning("Photo needs adjustment or replacement")
         if st.button("🛠️ Auto-Fix Photo"):
-            fixed_img = auto_fix_photo(processed_img, head_info)
-            fixed_with_lines, _, _ = draw_guidelines(fixed_img.copy(), head_info)
+            fixed_img = auto_fix_photo(cv_img, head_info)
+            # Re-process the fixed image to get updated head info
+            fixed_processed, fixed_head_info, fixed_issues, _ = process_photo(fixed_img)
+            fixed_with_lines, fixed_head_ratio, fixed_eye_ratio = draw_guidelines(fixed_processed.copy(), fixed_head_info)
+            
             st.subheader("🖼️ Auto-Fixed Photo")
             st.image(fixed_with_lines, width=600)
+            
+            # Show updated compliance results
+            st.subheader("🔍 Updated Compliance Check")
+            if fixed_issues:
+                for issue in fixed_issues:
+                    st.write(f"- {issue}")
+            else:
+                st.success("All compliance checks passed after auto-fix!")
+            
             # Download button
             buf = io.BytesIO()
-            fixed_img.save(buf, format="PNG")
+            fixed_processed.save(buf, format="PNG")
             st.download_button("⬇️ Download Fixed Photo", buf.getvalue(), file_name="fixed_photo.png", mime="image/png")
     else:
         st.success("All compliance checks passed!")
