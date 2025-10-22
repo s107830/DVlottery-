@@ -3,5 +3,5 @@ rich>=10.14.0,<14
 pillow==10.0.1
 numpy==1.26.0
 opencv-python==4.8.1.78
-mediapipe==0.10.2
+mediapipe==0.10.21
 rembg==2.1.3
