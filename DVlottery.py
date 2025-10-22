@@ -96,20 +96,33 @@ def check_hair_covering_eyes(landmarks, img_h, img_w):
         return True
 
 def check_image_quality(cv_img):
-    """Check for blurriness, lighting issues"""
+    """Check for blurriness, lighting issues - Less sensitive thresholds"""
     try:
-        # Check for blur using Laplacian variance
+        # Check for blur using Laplacian variance - Less sensitive threshold
         gray = cv2.cvtColor(cv_img, cv2.COLOR_RGB2GRAY)
         blur_value = cv2.Laplacian(gray, cv2.CV_64F).var()
         
-        # Check brightness
+        # Check brightness with wider acceptable range
         brightness = np.mean(gray)
         
+        # Calculate contrast
+        contrast = np.std(gray)
+        
         issues = []
-        if blur_value < 100:  # Threshold for blur detection
-            issues.append("Image may be blurry")
-        if brightness < 50 or brightness > 200:  # Too dark or too bright
-            issues.append("Lighting issues detected")
+        
+        # Less sensitive blur detection (reduced from 100 to 50)
+        if blur_value < 50:  
+            issues.append("Image may be blurry - use a clearer photo")
+        
+        # Wider brightness range (40-220 instead of 50-200)
+        if brightness < 40:  
+            issues.append("Photo may be too dark - improve lighting")
+        elif brightness > 220:
+            issues.append("Photo may be overexposed - reduce brightness")
+            
+        # Check contrast
+        if contrast < 40:
+            issues.append("Low contrast detected - ensure good lighting")
             
         return issues
     except:
@@ -137,7 +150,7 @@ def comprehensive_compliance_check(cv_img, landmarks, head_info):
     if not check_hair_covering_eyes(landmarks, h, w):
         issues.append("❌ Hair may be covering eyes or face")
     
-    # 5. Image quality check
+    # 5. Image quality check (less sensitive)
     quality_issues = check_image_quality(cv_img)
     issues.extend([f"❌ {issue}" for issue in quality_issues])
     
@@ -523,13 +536,13 @@ if uploaded_file:
     
     with col1:
         st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_column_width=True)
+        st.image(data['orig'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
         status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_column_width=True)
+        st.image(data['processed_with_lines'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
         if data['is_adjusted']:
             st.success("✅ Auto-adjustment applied")
