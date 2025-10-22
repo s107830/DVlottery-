@@ -96,33 +96,20 @@ def check_hair_covering_eyes(landmarks, img_h, img_w):
         return True
 
 def check_image_quality(cv_img):
-    """Check for blurriness, lighting issues - Less sensitive thresholds"""
+    """Check for blurriness, lighting issues"""
     try:
-        # Check for blur using Laplacian variance - Less sensitive threshold
+        # Check for blur using Laplacian variance
         gray = cv2.cvtColor(cv_img, cv2.COLOR_RGB2GRAY)
         blur_value = cv2.Laplacian(gray, cv2.CV_64F).var()
         
-        # Check brightness with wider acceptable range
+        # Check brightness
         brightness = np.mean(gray)
         
-        # Calculate contrast
-        contrast = np.std(gray)
-        
         issues = []
-        
-        # Less sensitive blur detection (reduced from 100 to 50)
-        if blur_value < 50:  
-            issues.append("Image may be blurry - use a clearer photo")
-        
-        # Wider brightness range (40-220 instead of 50-200)
-        if brightness < 40:  
-            issues.append("Photo may be too dark - improve lighting")
-        elif brightness > 220:
-            issues.append("Photo may be overexposed - reduce brightness")
-            
-        # Check contrast
-        if contrast < 40:
-            issues.append("Low contrast detected - ensure good lighting")
+        if blur_value < 100:  # Threshold for blur detection
+            issues.append("Image may be blurry")
+        if brightness < 50 or brightness > 200:  # Too dark or too bright
+            issues.append("Lighting issues detected")
             
         return issues
     except:
@@ -150,7 +137,7 @@ def comprehensive_compliance_check(cv_img, landmarks, head_info):
     if not check_hair_covering_eyes(landmarks, h, w):
         issues.append("❌ Hair may be covering eyes or face")
     
-    # 5. Image quality check (less sensitive)
+    # 5. Image quality check
     quality_issues = check_image_quality(cv_img)
     issues.extend([f"❌ {issue}" for issue in quality_issues])
     
@@ -531,31 +518,21 @@ if uploaded_file:
     if data['head_info'].get('is_baby', False):
         st.info("👶 **Baby photo detected** - Using special adjustments for infant facial proportions")
     
-    # Display results - FIXED: Added proper error handling for image display
+    # Display results
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("📷 Original Photo")
-        # FIXED: Added error handling for image display
-        if data.get('orig') is not None:
-            st.image(data['orig'], use_container_width=True)
-            st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
-        else:
-            st.error("❌ Original image not available")
-            st.info("Please upload a new photo")
+        st.image(data['orig'], use_column_width=True)
+        st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
         status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        # FIXED: Added error handling for image display
-        if data.get('processed_with_lines') is not None:
-            st.image(data['processed_with_lines'], use_container_width=True)
-            st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
-            if data['is_adjusted']:
-                st.success("✅ Auto-adjustment applied")
-        else:
-            st.error("❌ Processed image not available")
-            st.info("Please try uploading again")
+        st.image(data['processed_with_lines'], use_column_width=True)
+        st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
+        if data['is_adjusted']:
+            st.success("✅ Auto-adjustment applied")
 
     # COMPLIANCE ISSUES DISPLAY
     st.subheader("🔍 Compliance Check Results")
@@ -655,34 +632,26 @@ if uploaded_file:
         col1, col2 = st.columns(2)
         
         with col1:
-            # FIXED: Added error handling for download
-            if data.get('processed') is not None:
-                buf = io.BytesIO()
-                data['processed'].save(buf, format="JPEG", quality=95)
-                st.download_button(
-                    label="⬇️ Download (No Guidelines)",
-                    data=buf.getvalue(),
-                    file_name="dv_lottery_photo.jpg",
-                    mime="image/jpeg",
-                    use_container_width=True
-                )
-            else:
-                st.warning("Processed image not available for download")
+            buf = io.BytesIO()
+            data['processed'].save(buf, format="JPEG", quality=95)
+            st.download_button(
+                label="⬇️ Download (No Guidelines)",
+                data=buf.getvalue(),
+                file_name="dv_lottery_photo.jpg",
+                mime="image/jpeg",
+                use_container_width=True
+            )
         
         with col2:
-            # FIXED: Added error handling for download
-            if data.get('processed_with_lines') is not None:
-                buf_with_guides = io.BytesIO()
-                data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
-                st.download_button(
-                    label="⬇️ Download with Guidelines",
-                    data=buf_with_guides.getvalue(),
-                    file_name="dv_lottery_photo_with_guides.jpg",
-                    mime="image/jpeg",
-                    use_container_width=True
-                )
-            else:
-                st.warning("Image with guidelines not available for download")
+            buf_with_guides = io.BytesIO()
+            data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
+            st.download_button(
+                label="⬇️ Download with Guidelines",
+                data=buf_with_guides.getvalue(),
+                file_name="dv_lottery_photo_with_guides.jpg",
+                mime="image/jpeg",
+                use_container_width=True
+            )
     else:
         st.warning("**⚠️ Cannot download - Please upload a new photo that meets all requirements**")
 
