@@ -531,21 +531,31 @@ if uploaded_file:
     if data['head_info'].get('is_baby', False):
         st.info("👶 **Baby photo detected** - Using special adjustments for infant facial proportions")
     
-    # Display results
+    # Display results - FIXED: Added proper error handling for image display
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
-        st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
+        # FIXED: Added error handling for image display
+        if data.get('orig') is not None:
+            st.image(data['orig'], use_container_width=True)
+            st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
+        else:
+            st.error("❌ Original image not available")
+            st.info("Please upload a new photo")
 
     with col2:
         status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
-        st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
-        if data['is_adjusted']:
-            st.success("✅ Auto-adjustment applied")
+        # FIXED: Added error handling for image display
+        if data.get('processed_with_lines') is not None:
+            st.image(data['processed_with_lines'], use_container_width=True)
+            st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
+            if data['is_adjusted']:
+                st.success("✅ Auto-adjustment applied")
+        else:
+            st.error("❌ Processed image not available")
+            st.info("Please try uploading again")
 
     # COMPLIANCE ISSUES DISPLAY
     st.subheader("🔍 Compliance Check Results")
@@ -645,26 +655,34 @@ if uploaded_file:
         col1, col2 = st.columns(2)
         
         with col1:
-            buf = io.BytesIO()
-            data['processed'].save(buf, format="JPEG", quality=95)
-            st.download_button(
-                label="⬇️ Download (No Guidelines)",
-                data=buf.getvalue(),
-                file_name="dv_lottery_photo.jpg",
-                mime="image/jpeg",
-                use_container_width=True
-            )
+            # FIXED: Added error handling for download
+            if data.get('processed') is not None:
+                buf = io.BytesIO()
+                data['processed'].save(buf, format="JPEG", quality=95)
+                st.download_button(
+                    label="⬇️ Download (No Guidelines)",
+                    data=buf.getvalue(),
+                    file_name="dv_lottery_photo.jpg",
+                    mime="image/jpeg",
+                    use_container_width=True
+                )
+            else:
+                st.warning("Processed image not available for download")
         
         with col2:
-            buf_with_guides = io.BytesIO()
-            data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
-            st.download_button(
-                label="⬇️ Download with Guidelines",
-                data=buf_with_guides.getvalue(),
-                file_name="dv_lottery_photo_with_guides.jpg",
-                mime="image/jpeg",
-                use_container_width=True
-            )
+            # FIXED: Added error handling for download
+            if data.get('processed_with_lines') is not None:
+                buf_with_guides = io.BytesIO()
+                data['processed_with_lines'].save(buf_with_guides, format="JPEG", quality=95)
+                st.download_button(
+                    label="⬇️ Download with Guidelines",
+                    data=buf_with_guides.getvalue(),
+                    file_name="dv_lottery_photo_with_guides.jpg",
+                    mime="image/jpeg",
+                    use_container_width=True
+                )
+            else:
+                st.warning("Image with guidelines not available for download")
     else:
         st.warning("**⚠️ Cannot download - Please upload a new photo that meets all requirements**")
 
