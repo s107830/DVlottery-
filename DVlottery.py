@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image
 import numpy as np
 import cv2
 import io
@@ -40,7 +40,7 @@ def get_face_box(landmarks, img_w, img_h, padding=0.3):
     return x1, y1, x2, y2
 
 def remove_background(img_pil):
-    """Removes background and replaces it with white."""
+    """Removes background and replaces with white."""
     try:
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
@@ -122,7 +122,7 @@ if uploaded_file:
         st.subheader("📷 Original Photo")
         try:
             if isinstance(orig, Image.Image):
-                st.image(np.array(orig), use_container_width=True)
+                st.image(np.array(orig), width=300)
             else:
                 st.warning("Invalid image format — could not display original photo.")
         except Exception as e:
@@ -133,7 +133,7 @@ if uploaded_file:
         auto_adjust = st.button("🪄 Auto Adjust Face")
         processed_img = process_photo(bg_removed, auto_adjust=auto_adjust)
         try:
-            st.image(np.array(processed_img), use_container_width=True)
+            st.image(np.array(processed_img), width=300)
         except Exception as e:
             st.error(f"Failed to display processed image: {e}")
 
