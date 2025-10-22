@@ -1,8 +1,8 @@
-streamlit==1.39.0
-Pillow==10.4.0
-opencv-python-headless==4.10.0.84
-numpy==1.26.4
-rembg==2.0.67
-onnxruntime==1.19.2
-mediapipe==0.10.21
-protobuf==4.25.8
+streamlit==1.28.0
+Pillow==10.0.1
+opencv-python-headless==4.8.1.78
+numpy==1.24.3
+rembg==2.0.50
+onnxruntime==1.16.0
+mediapipe==0.10.0
+protobuf==3.20.3
