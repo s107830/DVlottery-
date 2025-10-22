@@ -1,13 +1,3 @@
-import os
-# Force CPU usage and reduce logging for Render compatibility
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-
-import warnings
-warnings.filterwarnings('ignore')
-
-# Your existing imports
 import streamlit as st
 from PIL import Image, ImageDraw, ImageEnhance
 import numpy as np
@@ -15,20 +5,11 @@ import cv2
 import io
 import mediapipe as mp
 from rembg import remove
-import signal
-
-# Rest of your existing code continues exactly as you have it...
-# Set environment variables for Render compatibility
-os.environ['CUDA_VISIBLE_DEVICES'] = ''  # Force CPU usage
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce tensorflow logging
+import warnings
+warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
-st.set_page_config(
-    page_title="DV Lottery Photo Editor", 
-    layout="wide",
-    page_icon="📸"
-)
-
+st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
 st.title("📸 DV Lottery Photo Editor — Auto Correction & Compliance Check")
 
 # ---------------------- CONSTANTS ----------------------
@@ -36,13 +17,8 @@ MIN_SIZE = 600
 HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
 EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
 
-# Initialize MediaPipe with error handling
-try:
-    mp_face_mesh = mp.solutions.face_mesh
-    mp_face_detection = mp.solutions.face_detection
-except Exception as e:
-    st.error(f"Error initializing MediaPipe: {e}")
-    st.stop()
+mp_face_mesh = mp.solutions.face_mesh
+mp_face_detection = mp.solutions.face_detection
 
 # ---------------------- COMPLIANCE CHECKERS ----------------------
 def check_facing_direction(landmarks, img_w, img_h):
@@ -226,36 +202,15 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         st.error(f"Landmark processing error: {str(e)}")
         raise
 
-class TimeoutError(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutError("Background removal timed out")
-
 def remove_background(img_pil):
-    """Background removal with timeout for Render compatibility"""
     try:
-        # Set timeout for background removal (25 seconds)
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(25)
-        
-        try:
-            b = io.BytesIO()
-            img_pil.save(b, format="PNG")
-            fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-            result = Image.alpha_composite(white, fg).convert("RGB")
-            signal.alarm(0)  # Cancel timeout
-            return result
-        except TimeoutError:
-            st.warning("⚠️ Background removal timed out. Using original image.")
-            return img_pil
-        except Exception as e:
-            st.warning(f"⚠️ Background removal failed: {str(e)}. Using original image.")
-            return img_pil
-            
+        b = io.BytesIO()
+        img_pil.save(b, format="PNG")
+        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        return Image.alpha_composite(white, fg).convert("RGB")
     except Exception as e:
-        st.warning(f"⚠️ Background removal failed: {str(e)}. Using original image.")
+        st.warning(f"Background removal failed: {str(e)}. Using original image.")
         return img_pil
 
 def is_likely_baby_photo(cv_img, landmarks):
@@ -532,14 +487,9 @@ with st.sidebar:
     enhance_quality = st.checkbox("Enhance Image Quality", value=True)
 
 # Main content
-uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"], key="file_uploader")
+uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg", "jpeg", "png"])
 
 if uploaded_file:
-    # File size validation (5MB limit for Render compatibility)
-    if uploaded_file.size > 5 * 1024 * 1024:
-        st.error("❌ File size too large. Please upload an image smaller than 5MB.")
-        st.stop()
-    
     # Initialize session state
     if 'processed_data' not in st.session_state or st.session_state.get('last_upload') != uploaded_file.name:
         st.session_state.last_upload = uploaded_file.name
@@ -586,13 +536,13 @@ if uploaded_file:
     
     with col1:
         st.subheader("📷 Original Photo")
-        st.image(data['orig'], use_container_width=True)
+        st.image(data['orig'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Original Size:** {data['orig'].size[0]}×{data['orig'].size[1]} pixels")
 
     with col2:
         status_text = "✅ Adjusted Photo" if data['is_adjusted'] else "📸 Initial Processed Photo"
         st.subheader(status_text)
-        st.image(data['processed_with_lines'], use_container_width=True)
+        st.image(data['processed_with_lines'], use_container_width=True)  # FIXED: use_container_width instead of use_column_width
         st.info(f"**Final Size:** {MIN_SIZE}×{MIN_SIZE} pixels")
         if data['is_adjusted']:
             st.success("✅ Auto-adjustment applied")
@@ -757,4 +707,3 @@ else:
 # Footer
 st.markdown("---")
 st.markdown("*DV Lottery Photo Editor | Now with comprehensive compliance checking*")
-
