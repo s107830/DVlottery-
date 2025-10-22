@@ -156,7 +156,7 @@ def process_photo(img_pil):
         head_info = {"top_y":0,"chin_y":0,"eye_y":0,"head_height":0,"canvas_size":MIN_SIZE,"is_baby":False}
         issues = ["❌ Cannot detect face properly"]
     
-    return result_img, head_info, issues
+    return result_img, head_info, issues, cv_img
 
 def draw_guidelines(img_pil, head_info):
     draw = ImageDraw.Draw(img_pil)
@@ -193,6 +193,17 @@ def draw_guidelines(img_pil, head_info):
 
     return img_pil, head_ratio, eye_ratio
 
+# ---------------------- AUTO FIX ----------------------
+def auto_fix_photo(cv_img, head_info):
+    # Shift canvas so eye line is centered in range
+    eye_y = head_info["eye_y"]
+    desired_eye_y = int(MIN_SIZE - MIN_SIZE*0.625)
+    shift_y = desired_eye_y - eye_y
+    img_np = np.array(cv_img)
+    M = np.float32([[1,0,0],[0,1,shift_y]])
+    shifted = cv2.warpAffine(img_np, M, (img_np.shape[1], img_np.shape[0]), borderValue=(255,255,255))
+    return Image.fromarray(shifted)
+
 # ---------------------- STREAMLIT UI ----------------------
 st.sidebar.header("📋 Instructions")
 st.sidebar.markdown("""
@@ -209,7 +220,7 @@ uploaded_file = st.file_uploader("📤 Upload Your Photo", type=["jpg","jpeg","p
 if uploaded_file:
     orig = Image.open(uploaded_file).convert("RGB")
     bg_removed = remove_background(orig)
-    processed_img, head_info, issues = process_photo(bg_removed)
+    processed_img, head_info, issues, cv_img = process_photo(bg_removed)
     processed_with_lines, head_ratio, eye_ratio = draw_guidelines(processed_img.copy(), head_info)
     
     st.subheader("📷 Original Photo")
@@ -222,6 +233,15 @@ if uploaded_file:
         for issue in issues:
             st.write(f"- {issue}")
         st.warning("Photo needs adjustment or replacement")
+        if st.button("🛠️ Auto-Fix Photo"):
+            fixed_img = auto_fix_photo(processed_img, head_info)
+            fixed_with_lines, _, _ = draw_guidelines(fixed_img.copy(), head_info)
+            st.subheader("🖼️ Auto-Fixed Photo")
+            st.image(fixed_with_lines, width=600)
+            # Download button
+            buf = io.BytesIO()
+            fixed_img.save(buf, format="PNG")
+            st.download_button("⬇️ Download Fixed Photo", buf.getvalue(), file_name="fixed_photo.png", mime="image/png")
     else:
         st.success("All compliance checks passed!")
     
