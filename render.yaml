@@ -3,7 +3,5 @@ services:
     name: dv-lottery-photo-editor
     env: python
     plan: free
-    buildCommand: |-
-      pip install --upgrade pip
-      pip install -r requirements.txt
-    startCommand: streamlit run app.py --server.port=$PORT --server.address=0.0.0.0
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    startCommand: "streamlit run DVlottery.py --server.port $PORT --server.address 0.0.0.0"
