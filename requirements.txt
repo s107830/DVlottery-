@@ -4,5 +4,5 @@ opencv-python-headless==4.8.1.78
 numpy==1.24.3
 rembg==2.0.50
 onnxruntime==1.16.0
-mediapipe==0.10.0
+mediapipe==0.10.14
 protobuf==3.20.3
