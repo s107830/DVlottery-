@@ -1,126 +1,220 @@
 import streamlit as st
 from PIL import Image, ImageDraw
 import numpy as np
-import cv2, io, warnings
+import cv2
+import io
 import mediapipe as mp
-from rembg import remove
-warnings.filterwarnings("ignore")
+from transparent_background import Remover
+import warnings
+warnings.filterwarnings('ignore')
 
-# ---------------------- CONFIG ----------------------
+# ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Accurate Head/Eye Calibration v3")
+st.title("DV Lottery Photo Editor — Auto Correction & Official DV Guidelines")
 
+# ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
+HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
+EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
+DPI = 300  # 2x2 inch photo at 300 DPI
 mp_face_mesh = mp.solutions.face_mesh
-HEAD_RANGE = (0.50, 0.69)
-EYE_RANGE  = (0.56, 0.69)
 
-# ---------------------- LANDMARK HELPERS ----------------------
+# ---------------------- FACE UTILITIES ----------------------
 def get_face_landmarks(cv_img):
-    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1,
-                               refine_landmarks=True, min_detection_confidence=0.4) as fm:
-        res = fm.process(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
-        if not res.multi_face_landmarks:
-            raise Exception("No face detected")
-        return res.multi_face_landmarks[0]
+    with mp_face_mesh.FaceMesh(
+        static_image_mode=True, max_num_faces=1, refine_landmarks=True,
+        min_detection_confidence=0.4, min_tracking_confidence=0.4
+    ) as fm:
+        img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        results = fm.process(img_rgb)
+        if not results.multi_face_landmarks:
+            raise Exception("No face landmarks found")
+        return results.multi_face_landmarks[0]
 
-def measure_positions(landmarks, h, w):
-    top    = int(landmarks.landmark[10].y * h)
-    chin   = int(landmarks.landmark[152].y * h)
-    left_e = int(landmarks.landmark[33].y * h)
-    right_e= int(landmarks.landmark[263].y * h)
-    eye_y  = (left_e + right_e)//2
-    face_h = chin - top
-    # add 12 % buffer for hair
-    top = max(0, top - int(face_h*0.12))
-    return top, chin, eye_y
+def get_head_eye_positions(landmarks, img_h, img_w):
+    top_y = int(landmarks.landmark[10].y * img_h)
+    chin_y = int(landmarks.landmark[152].y * img_h)
+    left_eye_y = int(landmarks.landmark[33].y * img_h)
+    right_eye_y = int(landmarks.landmark[263].y * img_h)
+    eye_y = (left_eye_y + right_eye_y) // 2
+    hair_buffer = int((chin_y - top_y) * 0.25)
+    top_y = max(0, top_y - hair_buffer)
+    return top_y, chin_y, eye_y
 
-# ---------------------- BACKGROUND ----------------------
-def remove_bg(img):
+def remove_background(img_pil):
     try:
-        b = io.BytesIO(); img.save(b, format="PNG")
-        fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-        white = Image.new("RGBA", fg.size, (255,255,255,255))
-        return Image.alpha_composite(white, fg).convert("RGB")
-    except:
-        return img
+        # Initialize transparent-background remover
+        remover = Remover(mode='torchlit')  # 'torchlit' for sharper edges
+        # Process image and set white background
+        fg = remover.process(img_pil, type='white')  # Directly outputs RGB with white background
+        return fg.convert("RGB")
+    except Exception as e:
+        st.warning(f"Background removal failed: {str(e)}. Using original image.")
+        return img_pil.convert("RGB")
 
-# ---------------------- CORE AUTO-CROP ----------------------
-def crop_dv(img_pil, auto=True):
-    cv_img = np.array(img_pil.convert("RGB"))
+# ---------------------- AUTO CROP ----------------------
+def auto_crop_dv(img_pil):
+    cv_img = np.array(img_pil)
+    if len(cv_img.shape) == 2:
+        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
+    elif cv_img.shape[2] == 4:
+        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
+
     h, w = cv_img.shape[:2]
-    try:
-        lm = get_face_landmarks(cv_img)
-        top, chin, eye_y = measure_positions(lm, h, w)
-    except:
-        resized = cv2.resize(cv_img,(MIN_SIZE,MIN_SIZE))
-        return Image.fromarray(resized), dict(top_y=150,chin_y=400,eye_y=270,head_h=250)
+    landmarks = get_face_landmarks(cv_img)
+    top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
+    head_h = chin_y - top_y
 
-    # target head = 60 % of frame, eyes ≈ 58 %
-    head_h = chin - top
-    target_head = 0.60 * MIN_SIZE
+    # Target head height ~63% of 600px = 378px
+    target_head = MIN_SIZE * 0.63
     scale = target_head / head_h
-    new_w,new_h = int(w*scale), int(h*scale)
-    resized = cv2.resize(cv_img,(new_w,new_h))
+    new_w, new_h = int(w * scale), int(h * scale)
+    resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
-    canvas = np.full((MIN_SIZE,MIN_SIZE,3),255,np.uint8)
+    canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
+    target_eye_min = MIN_SIZE - int(EYE_MAX_RATIO * MIN_SIZE)
+    target_eye_max = MIN_SIZE - int(EYE_MIN_RATIO * MIN_SIZE)
+    target_eye = (target_eye_min + target_eye_max) // 2
 
-    # vertical offset so that eyes land near 58 % of image height
-    eye_scaled = eye_y * scale
-    target_eye = MIN_SIZE * 0.58
-    y_off = int(target_eye - eye_scaled)
-    x_off = (MIN_SIZE - new_w)//2
-    y_off = max(min(y_off,MIN_SIZE-new_h),0)
-    canvas[y_off:y_off+new_h,x_off:x_off+new_w] = resized[:MIN_SIZE-y_off,:MIN_SIZE-x_off]
+    landmarks_resized = get_face_landmarks(resized)
+    top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
+    y_offset = target_eye - eye_y
+    x_offset = (MIN_SIZE - new_w) // 2
 
-    info = dict(top_y=top*scale+y_off, chin_y=chin*scale+y_off,
-                eye_y=eye_scaled+y_off, head_h=head_h*scale)
-    return Image.fromarray(canvas), info
+    y_start_dst = max(0, y_offset)
+    y_end_dst = min(MIN_SIZE, y_offset + new_h)
+    x_start_dst = max(0, x_offset)
+    x_end_dst = min(MIN_SIZE, x_offset + new_w)
 
-# ---------------------- DRAW + ANALYZE ----------------------
-def annotate(img, info):
+    y_start_src = max(0, -y_offset)
+    y_end_src = min(new_h, MIN_SIZE - y_offset)
+    x_start_src = max(0, -x_offset)
+    x_end_src = min(new_w, MIN_SIZE - x_offset)
+
+    canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
+        resized[y_start_src:y_end_src, x_start_src:x_end_src]
+
+    final_top_y = top_y + y_offset
+    final_chin_y = chin_y + y_offset
+    final_eye_y = eye_y + y_offset
+
+    head_info = {
+        "top_y": final_top_y,
+        "chin_y": final_chin_y,
+        "eye_y": final_eye_y,
+        "head_height": chin_y - top_y,
+        "canvas_size": MIN_SIZE
+    }
+    return Image.fromarray(canvas), head_info
+
+# ---------------------- DRAW DV GUIDELINES ----------------------
+def draw_guidelines(img, head_info):
     draw = ImageDraw.Draw(img)
-    w,h = img.size
-    t,c,e = info["top_y"], info["chin_y"], info["eye_y"]
-    head_r = (c - t)/h
-    eye_r  = (h - e)/h
-    ok = HEAD_RANGE[0]<=head_r<=HEAD_RANGE[1] and EYE_RANGE[0]<=eye_r<=EYE_RANGE[1]
-    color = "green" if ok else "red"
-    draw.line([(0,t),(w,t)],fill="green",width=2)
-    draw.line([(0,e),(w,e)],fill="orange",width=2)
-    draw.line([(0,c),(w,c)],fill="red",width=2)
-    box=[(10,10),(220,85)]
-    draw.rectangle(box,outline=color,fill="white",width=3)
-    draw.text((20,15),"PASS" if ok else "FAIL",fill=color)
-    draw.text((20,35),f"Head: {int(head_r*100)}%",fill="black")
-    draw.text((20,50),f"Eyes: {int(eye_r*100)}%",fill="black")
-    return img,head_r,eye_r,ok
+    w, h = img.size
+    cx = w // 2
+    top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
+    head_h = head_info["head_height"]
+    head_ratio = head_h / h
+    eye_ratio = (h - eye_y) / h
+
+    head_color = "green" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "red"
+    eye_color = "green" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "red"
+
+    eye_min_px = int(1.125 * DPI)
+    eye_max_px = int(1.375 * DPI)
+    eye_band_top = h - eye_max_px
+    eye_band_bottom = h - eye_min_px
+
+    # Red guideline lines
+    draw.line([(0, top_y), (w, top_y)], fill="red", width=3)
+    draw.line([(0, eye_y), (w, eye_y)], fill="red", width=3)
+    draw.line([(0, chin_y), (w, chin_y)], fill="red", width=3)
+
+    # Green dashed eye band
+    for x in range(0, w, 20):
+        draw.line([(x, eye_band_top), (x + 10, eye_band_top)], fill="green", width=2)
+        draw.line([(x, eye_band_bottom), (x + 10, eye_band_bottom)], fill="green", width=2)
+
+    # Labels (ASCII-safe)
+    draw.text((10, top_y - 25), "Top of Head", fill="red")
+    draw.text((10, eye_y - 15), "Eye Line", fill="red")
+    draw.text((10, chin_y - 20), "Chin", fill="red")
+    draw.text((w - 240, eye_band_top - 20), "1 inch to 1-3/8 inch", fill="green")
+    draw.text((w - 300, eye_band_bottom + 5), "1-1/8 inch to 1-3/8 inch from bottom", fill="green")
+
+    # 2x2 box outline & center line
+    draw.rectangle([(0, 0), (w - 1, h - 1)], outline="black", width=3)
+    draw.line([(cx, 0), (cx, h)], fill="gray", width=1)
+
+    # Vertical inch rulers (left & right)
+    inch_px = DPI
+    for i in range(3):
+        y = i * inch_px
+        draw.line([(0, y), (20, y)], fill="black", width=2)
+        draw.text((25, y - 10), f"{i} in", fill="black")
+        draw.line([(w - 20, y), (w, y)], fill="black", width=2)
+        draw.text((w - 55, y - 10), f"{i} in", fill="black")
+
+    # PASS/FAIL box (plain ASCII)
+    passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
+    badge_color = "green" if passed else "red"
+    status_text = "PASS" if passed else "FAIL"
+    draw.rectangle([(10, 10), (170, 60)], fill="white", outline=badge_color, width=3)
+    draw.text((25, 20), status_text, fill=badge_color)
+    draw.text((25, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
+
+    return img, head_ratio, eye_ratio
 
 # ---------------------- STREAMLIT UI ----------------------
+st.sidebar.header("Instructions")
 st.sidebar.markdown("""
-**DV Lottery Requirements**  
-• Image 600×600 white background  
-• Head 50–69 % of frame  
-• Eyes 56–69 % from bottom  
-• Centered, front-facing, neutral expression
+1. Upload a clear front-facing photo.
+2. The tool removes the background & centers your face.
+3. Crops & scales to official 2x2 inch (600x600 px) size.
+4. Draws DV guidelines and compliance ruler.
+
+**DV Requirements:**
+- Head height: 50–69% of image  
+- Eyes: 1-1/8–1-3/8 inch from bottom  
+- Plain white background  
+- Neutral expression, both eyes open  
+- No glasses, hats, or shadows
 """)
 
-upl = st.file_uploader("Upload photo (JPG/PNG)",type=["jpg","jpeg","png"])
-if upl:
-    src = Image.open(upl).convert("RGB")
-    with st.spinner("Processing photo …"):
-        clean = remove_bg(src)
-        cropped,info = crop_dv(clean)
-        out,hr,er,ok = annotate(cropped.copy(),info)
+uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
 
-    c1,c2=st.columns(2)
-    c1.image(src,use_column_width=True,caption="Original")
-    c2.image(out,use_column_width=True,caption="Processed 600×600")
+if uploaded:
+    try:
+        orig = Image.open(uploaded).convert("RGB")
+        with st.spinner("Processing photo..."):
+            bg_removed = remove_background(orig)
+            processed, head_info = auto_crop_dv(bg_removed)
+            overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Original")
+            st.image(orig, use_column_width=True)
+        with col2:
+            st.subheader("Processed (600x600)")
+            st.image(overlay, use_column_width=True)
 
-    buf=io.BytesIO(); cropped.save(buf,format="JPEG",quality=95)
-    st.download_button("📥 Download DV Photo",buf.getvalue(),"dv_photo.jpg","image/jpeg")
-
-    st.info(f"**Analysis** Head {hr*100:.1f}% | Eyes {er*100:.1f}% → {'✅ Pass' if ok else '❌ Needs adjust'}")
+            # Save with DPI metadata for DV compliance
+            buf = io.BytesIO()
+            processed.save(buf, format="JPEG", quality=95, dpi=(DPI, DPI))
+            st.download_button(
+                label="Download Final 600x600 Photo",
+                data=buf.getvalue(),
+                file_name="dv_photo_final.jpg",
+                mime="image/jpeg"
+            )
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
 else:
-    st.write("📸 Upload a photo to auto-crop to DV Lottery standard.")
-st.caption("DV Lottery Photo Editor v3 — Accurate Head/Eye Calibration")
+    st.markdown("""
+    ## Welcome to the DV Lottery Photo Editor  
+    Upload your photo above to generate a perfect 600x600 DV-compliant image  
+    with official guideline lines, inch rulers, and pass/fail verification.
+    """)
+
+st.markdown("---")
+st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (ASCII-safe)")
