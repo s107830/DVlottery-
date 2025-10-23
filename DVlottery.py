@@ -10,13 +10,13 @@ warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("📸 DV Lottery Photo Editor — Auto Correction & Official DV Guidelines")
+st.title("DV Lottery Photo Editor — Auto Correction & Official DV Guidelines")
 
 # ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
 HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
 EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
-DPI = 300  # DV specification
+DPI = 300  # 2x2 inch photo at 300 DPI
 mp_face_mesh = mp.solutions.face_mesh
 
 # ---------------------- FACE UTILITIES ----------------------
@@ -58,38 +58,51 @@ def auto_crop_dv(img_pil):
         cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
     elif cv_img.shape[2] == 4:
         cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
+
     h, w = cv_img.shape[:2]
     landmarks = get_face_landmarks(cv_img)
     top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
     head_h = chin_y - top_y
+
+    # target head height ~63% of 600px = 378px
     target_head = MIN_SIZE * 0.63
     scale = target_head / head_h
     new_w, new_h = int(w * scale), int(h * scale)
     resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+
     canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
     target_eye_min = MIN_SIZE - int(EYE_MAX_RATIO * MIN_SIZE)
     target_eye_max = MIN_SIZE - int(EYE_MIN_RATIO * MIN_SIZE)
     target_eye = (target_eye_min + target_eye_max) // 2
+
     landmarks_resized = get_face_landmarks(resized)
     top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
     y_offset = target_eye - eye_y
     x_offset = (MIN_SIZE - new_w) // 2
+
     y_start_dst = max(0, y_offset)
     y_end_dst = min(MIN_SIZE, y_offset + new_h)
     x_start_dst = max(0, x_offset)
     x_end_dst = min(MIN_SIZE, x_offset + new_w)
+
     y_start_src = max(0, -y_offset)
     y_end_src = min(new_h, MIN_SIZE - y_offset)
     x_start_src = max(0, -x_offset)
     x_end_src = min(new_w, MIN_SIZE - x_offset)
+
     canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
         resized[y_start_src:y_end_src, x_start_src:x_end_src]
+
     final_top_y = top_y + y_offset
     final_chin_y = chin_y + y_offset
     final_eye_y = eye_y + y_offset
+
     head_info = {
-        "top_y": final_top_y, "chin_y": final_chin_y, "eye_y": final_eye_y,
-        "head_height": chin_y - top_y, "canvas_size": MIN_SIZE
+        "top_y": final_top_y,
+        "chin_y": final_chin_y,
+        "eye_y": final_eye_y,
+        "head_height": chin_y - top_y,
+        "canvas_size": MIN_SIZE
     }
     return Image.fromarray(canvas), head_info
 
@@ -102,24 +115,26 @@ def draw_guidelines(img, head_info):
     head_h = head_info["head_height"]
     head_ratio = head_h / h
     eye_ratio = (h - eye_y) / h
+
     head_color = "green" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "red"
     eye_color = "green" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "red"
+
     eye_min_px = int(1.125 * DPI)
     eye_max_px = int(1.375 * DPI)
     eye_band_top = h - eye_max_px
     eye_band_bottom = h - eye_min_px
 
-    # Red main lines
+    # Red guideline lines
     draw.line([(0, top_y), (w, top_y)], fill="red", width=3)
     draw.line([(0, eye_y), (w, eye_y)], fill="red", width=3)
     draw.line([(0, chin_y), (w, chin_y)], fill="red", width=3)
 
-    # Green eye band
+    # Green dashed eye band
     for x in range(0, w, 20):
         draw.line([(x, eye_band_top), (x + 10, eye_band_top)], fill="green", width=2)
         draw.line([(x, eye_band_bottom), (x + 10, eye_band_bottom)], fill="green", width=2)
 
-    # Safe ASCII labels (no Unicode fractions)
+    # Labels (safe ASCII)
     draw.text((10, top_y - 25), "Top of Head", fill="red")
     draw.text((10, eye_y - 15), "Eye Line", fill="red")
     draw.text((10, chin_y - 20), "Chin", fill="red")
@@ -130,49 +145,46 @@ def draw_guidelines(img, head_info):
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline="black", width=3)
     draw.line([(cx, 0), (cx, h)], fill="gray", width=1)
 
-    # Vertical ruler ticks (left side)
+    # Vertical inch rulers (left & right)
     inch_px = DPI
     for i in range(3):
         y = i * inch_px
         draw.line([(0, y), (20, y)], fill="black", width=2)
         draw.text((25, y - 10), f"{i} in", fill="black")
-
-    # Right-side ruler
-    for i in range(3):
-        y = i * inch_px
         draw.line([(w - 20, y), (w, y)], fill="black", width=2)
         draw.text((w - 55, y - 10), f"{i} in", fill="black")
 
-    # Pass/Fail badge
+    # PASS/FAIL box (plain text)
     passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
     badge_color = "green" if passed else "red"
+    status_text = "PASS" if passed else "FAIL"
     draw.rectangle([(10, 10), (170, 60)], fill="white", outline=badge_color, width=3)
-    draw.text((20, 20), "PASS ✅" if passed else "FAIL ❌", fill=badge_color)
-    draw.text((20, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
+    draw.text((25, 20), status_text, fill=badge_color)
+    draw.text((25, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
 
     return img, head_ratio, eye_ratio
 
 # ---------------------- STREAMLIT UI ----------------------
-st.sidebar.header("📋 Instructions")
+st.sidebar.header("Instructions")
 st.sidebar.markdown("""
 1. Upload a clear front-facing photo.
 2. The tool removes the background & centers your face.
-3. It crops & scales to official 2×2 inch DV specs (600×600 px).
-4. Shows DV guideline lines, inch ruler, and PASS/FAIL badge.
+3. Crops & scales to official 2x2 inch (600x600 px) size.
+4. Draws DV guidelines and compliance ruler.
 
 **DV Requirements:**
-- Head height: 50–69% of photo  
-- Eyes: 1-1/8″–1-3/8″ from bottom  
+- Head height: 50–69% of image  
+- Eyes: 1-1/8–1-3/8 inch from bottom  
 - Plain white background  
 - Neutral expression, both eyes open  
-- No glasses or shadows
+- No glasses, hats, or shadows
 """)
 
-uploaded = st.file_uploader("📤 Upload Photo", type=["jpg", "jpeg", "png"])
+uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
 
 if uploaded:
     orig = Image.open(uploaded).convert("RGB")
-    with st.spinner("Processing..."):
+    with st.spinner("Processing photo..."):
         bg_removed = remove_background(orig)
         processed, head_info = auto_crop_dv(bg_removed)
         overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
@@ -181,18 +193,23 @@ if uploaded:
         st.subheader("Original")
         st.image(orig, use_container_width=True)
     with col2:
-        st.subheader("Processed (600×600)")
+        st.subheader("Processed (600x600)")
         st.image(overlay, use_container_width=True)
+
         buf = io.BytesIO()
         processed.save(buf, format="JPEG", quality=95)
-        st.download_button("⬇️ Download Final 600×600 Photo", buf.getvalue(),
-                           "dv_photo_final.jpg", "image/jpeg")
+        st.download_button(
+            label="Download Final 600x600 Photo",
+            data=buf.getvalue(),
+            file_name="dv_photo_final.jpg",
+            mime="image/jpeg"
+        )
 else:
     st.markdown("""
-    ## 🏁 Welcome to DV Lottery Photo Editor  
-    Upload your image above — the app auto-crops, checks proportions,
-    and draws **official DV guideline lines with inch rulers** exactly like the U.S. spec.
+    ## Welcome to the DV Lottery Photo Editor  
+    Upload your photo above to generate a perfect 600x600 DV-compliant image  
+    with official guideline lines, inch rulers, and pass/fail verification.
     """)
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Official 2×2 inch Compliance Visualizer (Unicode-safe)")
+st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (ASCII-safe)")
