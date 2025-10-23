@@ -10,13 +10,13 @@ warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Baby-Aware Auto Correction & Official DV Guidelines")
+st.title("DV Lottery Photo Editor — Baby Aware + Auto Fit + Official Guidelines")
 
 # ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
 HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
 EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
-DPI = 300
+DPI = 300  # 2x2 inch photo at 300 DPI
 mp_face_mesh = mp.solutions.face_mesh
 
 # ---------------------- FACE UTILITIES ----------------------
@@ -54,10 +54,7 @@ def remove_background(img_pil):
 
 # ---------------------- BABY DETECTION ----------------------
 def is_baby_photo(landmarks, img_h, img_w):
-    """
-    Heuristic baby detector: checks face proportions.
-    Babies tend to have larger heads vs face width, smaller chin area, and higher eyes.
-    """
+    """Detects baby facial proportions based on eye and chin placement."""
     try:
         top_y = landmarks.landmark[10].y * img_h
         chin_y = landmarks.landmark[152].y * img_h
@@ -67,20 +64,18 @@ def is_baby_photo(landmarks, img_h, img_w):
         nose_y = landmarks.landmark[1].y * img_h
 
         face_height = chin_y - top_y
-        eye_to_chin = chin_y - eye_y
         eye_to_top = eye_y - top_y
         ratio = eye_to_top / face_height
-
-        # Babies typically have eyes closer to vertical center or higher (ratio > 0.42)
-        # and shorter nose-to-chin proportion (less developed jaw)
         jaw_ratio = (chin_y - nose_y) / face_height
 
+        # Babies have higher eyes and smaller chin area
         return ratio > 0.42 and jaw_ratio < 0.33
     except:
         return False
 
 # ---------------------- AUTO CROP ----------------------
 def auto_crop_dv(img_pil):
+    """Auto-crops photo to DV specs with baby detection and head-fit fix."""
     cv_img = np.array(img_pil)
     if len(cv_img.shape) == 2:
         cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
@@ -92,16 +87,10 @@ def auto_crop_dv(img_pil):
     top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
     head_h = chin_y - top_y
 
-    # detect baby
     baby_mode = is_baby_photo(landmarks, h, w)
-
-    if baby_mode:
-        st.info("👶 Baby detected: applying gentle scaling for larger head proportion.")
-        target_head = MIN_SIZE * 0.58  # babies have bigger head ratio
-    else:
-        target_head = MIN_SIZE * 0.63
-
+    target_head = MIN_SIZE * (0.58 if baby_mode else 0.63)
     scale = target_head / head_h
+
     new_w, new_h = int(w * scale), int(h * scale)
     resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
@@ -115,6 +104,18 @@ def auto_crop_dv(img_pil):
     y_offset = target_eye - eye_y
     x_offset = (MIN_SIZE - new_w) // 2
 
+    # ----- auto zoom-out if head might get cut -----
+    if (top_y + y_offset < 0) or (chin_y + y_offset > MIN_SIZE):
+        y_offset = min(max(y_offset, 0), MIN_SIZE - new_h)
+        scale *= 0.9  # zoom out slightly
+        new_w, new_h = int(w * scale), int(h * scale)
+        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        landmarks_resized = get_face_landmarks(resized)
+        top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
+        y_offset = target_eye - eye_y
+        x_offset = (MIN_SIZE - new_w) // 2
+
+    # ----- paste to white canvas -----
     y_start_dst = max(0, y_offset)
     y_end_dst = min(MIN_SIZE, y_offset + new_h)
     x_start_dst = max(0, x_offset)
@@ -177,6 +178,7 @@ def draw_guidelines(img, head_info):
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline="black", width=3)
     draw.line([(cx, 0), (cx, h)], fill="gray", width=1)
 
+    # inch rulers
     inch_px = DPI
     for i in range(3):
         y = i * inch_px
@@ -185,30 +187,40 @@ def draw_guidelines(img, head_info):
         draw.line([(w - 20, y), (w, y)], fill="black", width=2)
         draw.text((w - 55, y - 10), f"{i} in", fill="black")
 
-    passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
+    # ----- PASS / FAIL LOGIC -----
+    head_in_frame = (head_info["top_y"] > 5) and (head_info["chin_y"] < h - 5)
+    passed = (
+        HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
+        and EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO
+        and head_in_frame
+    )
+
     badge_color = "green" if passed else "red"
     status_text = "PASS" if passed else "FAIL"
-    draw.rectangle([(10, 10), (190, 65)], fill="white", outline=badge_color, width=3)
+    draw.rectangle([(10, 10), (200, 75)], fill="white", outline=badge_color, width=3)
     draw.text((20, 20), status_text, fill=badge_color)
     draw.text((20, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
 
+    if not head_in_frame:
+        draw.text((20, 60), "Head cropped - FAIL", fill="red")
+
     if head_info.get("is_baby", False):
-        draw.text((20, 70), "Baby Mode Active", fill="orange")
+        draw.text((20, 80), "Baby Mode Active", fill="orange")
 
     return img, head_ratio, eye_ratio
 
 # ---------------------- STREAMLIT UI ----------------------
 st.sidebar.header("Instructions")
 st.sidebar.markdown("""
-1. Upload a clear front-facing photo.
-2. Background auto-removed and centered.
-3. Automatically detects baby faces and adjusts proportions.
-4. Draws DV guidelines & compliance rulers.
+1. Upload a front-facing photo.
+2. Background auto-removed & cropped to 2x2 inch.
+3. Detects baby faces & adjusts scaling.
+4. Automatically fails or zooms out if head cropped.
 
 **DV Requirements:**
-- Head height: 50–69%  
-- Eyes: 1-1/8–1-3/8 inch from bottom  
-- White background, neutral face, no glasses/hats.
+- Head height: 50–69%
+- Eyes: 1-1/8–1-3/8 inch from bottom
+- White background, neutral expression
 """)
 
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
@@ -239,9 +251,10 @@ if uploaded:
 else:
     st.markdown("""
     ## Welcome to the DV Lottery Photo Editor  
-    Upload your photo to generate a perfect DV-compliant 600x600 image.  
-    Baby faces are auto-detected and adjusted for proper proportions.
+    Upload your photo to generate a perfect 600x600 DV-compliant image.  
+    Baby faces are auto-detected and scaling adjusted to fit full head.  
+    Cropped heads now automatically FAIL.
     """)
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Baby Detection & Official 2x2 inch Guidelines")
+st.caption("DV Lottery Photo Editor | Baby Detection + Auto Fit + Cropped Head Fail Check")
