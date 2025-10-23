@@ -67,7 +67,7 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         raise
 
 def get_ear_mask(landmarks, img_h, img_w):
-    """Create a mask to protect ear regions based on MediaPipe landmarks."""
+    """Create a refined mask to protect ear regions with smaller ellipses."""
     try:
         mask = np.zeros((img_h, img_w), dtype=np.uint8)
         # Ear landmarks (left ear: 234, right ear: 454)
@@ -75,14 +75,11 @@ def get_ear_mask(landmarks, img_h, img_w):
             (int(landmarks.landmark[234].x * img_w), int(landmarks.landmark[234].y * img_h)),  # Left ear
             (int(landmarks.landmark[454].x * img_w), int(landmarks.landmark[454].y * img_h)),  # Right ear
         ]
-        # Create larger, softer elliptical regions around ears
+        # Smaller and more precise elliptical regions
         for x, y in ear_points:
-            # Increased ellipse size and softened edges
-            cv2.ellipse(mask, (x, y), (40, 60), 0, 0, 360, 255, -1)  # Larger ellipse
-            # Apply Gaussian blur to soften mask edges
-            mask = cv2.GaussianBlur(mask, (9, 9), 0)
-            # Threshold to maintain binary mask
-            _, mask = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
+            cv2.ellipse(mask, (x, y), (20, 30), 0, 0, 360, 255, -1)  # Reduced ellipse size
+            mask = cv2.GaussianBlur(mask, (5, 5), 0)  # Softer blur
+            _, mask = cv2.threshold(mask, 150, 255, cv2.THRESH_BINARY)  # Adjusted threshold
         return mask
     except Exception as e:
         st.warning(f"Error creating ear mask: {str(e)}")
@@ -122,8 +119,8 @@ def remove_background(img_pil, brightness_factor=1.0):
             kernel = np.ones((2, 2), np.uint8)
             alpha = cv2.dilate(alpha, kernel, iterations=1)
             alpha = cv2.erode(alpha, kernel, iterations=1)
-            # Protect ear regions
-            alpha = cv2.bitwise_or(alpha, ear_mask[:alpha.shape[0], :alpha.shape[1]])
+            # Apply ear mask more precisely
+            alpha = cv2.bitwise_and(alpha, cv2.bitwise_not(ear_mask[:alpha.shape[0], :alpha.shape[1]]))
             fg_np[:, :, 3] = alpha
             fg = Image.fromarray(fg_np)
 
