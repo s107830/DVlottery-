@@ -5,6 +5,7 @@ import mediapipe as mp
 import io
 import warnings
 import sys
+import cv2
 
 # Check for cv2 import
 try:
@@ -68,11 +69,31 @@ def get_head_eye_positions(landmarks, img_h, img_w):
 def remove_background(img_pil):
     try:
         if REMBG_AVAILABLE:
+            # Preprocess: Enhance contrast
+            cv_img = np.array(img_pil)
+            cv_img = cv2.convertScaleAbs(cv_img, alpha=1.1, beta=10)  # Increase contrast
+            img_pil = Image.fromarray(cv_img)
+
+            # Remove background with rembg
             b = io.BytesIO()
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
+
+            # Post-process: Clean up alpha mask to remove colored edges
+            fg_np = np.array(fg)
+            alpha = fg_np[:, :, 3]
+            # Apply binary threshold to make edges sharp
+            _, alpha = cv2.threshold(alpha, 240, 255, cv2.THRESH_BINARY)
+            # Erode to remove thin edge artifacts
+            kernel = np.ones((3, 3), np.uint8)
+            alpha = cv2.erode(alpha, kernel, iterations=1)
+            fg_np[:, :, 3] = alpha
+            fg = Image.fromarray(fg_np)
+
+            # Composite onto white background
             white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-            return Image.alpha_composite(white, fg).convert("RGB")
+            result = Image.alpha_composite(white, fg).convert("RGB")
+            return result
         else:
             st.warning("No background removal available. Using original image.")
             return img_pil.convert("RGB")
