@@ -66,25 +66,6 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         st.error(f"Error calculating head/eye positions: {str(e)}")
         raise
 
-def get_ear_mask(landmarks, img_h, img_w):
-    """Create a refined mask to protect ear regions with smaller ellipses."""
-    try:
-        mask = np.zeros((img_h, img_w), dtype=np.uint8)
-        # Ear landmarks (left ear: 234, right ear: 454)
-        ear_points = [
-            (int(landmarks.landmark[234].x * img_w), int(landmarks.landmark[234].y * img_h)),  # Left ear
-            (int(landmarks.landmark[454].x * img_w), int(landmarks.landmark[454].y * img_h)),  # Right ear
-        ]
-        # Smaller and more precise elliptical regions
-        for x, y in ear_points:
-            cv2.ellipse(mask, (x, y), (15, 25), 0, 0, 360, 255, -1)
-            mask = cv2.GaussianBlur(mask, (3, 3), 0)
-            _, mask = cv2.threshold(mask, 180, 255, cv2.THRESH_BINARY)
-        return mask
-    except Exception as e:
-        st.warning(f"Error creating ear mask: {str(e)}")
-        return np.zeros((img_h, img_w), dtype=np.uint8)
-
 def remove_background(img_pil, brightness_factor=1.0):
     try:
         if REMBG_AVAILABLE:
@@ -102,12 +83,15 @@ def remove_background(img_pil, brightness_factor=1.0):
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Ensure white background
-            white_bg = Image.new("RGB", fg.size, (255, 255, 255))
+            # Improve edge preservation for hair
             fg_np = np.array(fg)
             alpha = fg_np[:, :, 3] / 255.0
+            # Apply a slight edge enhancement to preserve hair details
+            alpha = cv2.GaussianBlur(alpha, (5, 5), sigmaX=1.0)
             alpha = np.stack((alpha, alpha, alpha), axis=2)
-            result_np = (fg_np[:, :, :3].astype(float) * alpha + np.array([255, 255, 255]).astype(float) * (1 - alpha)).astype(np.uint8)
+            # Blend with white background
+            white_bg = np.full(fg_np.shape[:2] + (3,), 255, dtype=np.uint8)
+            result_np = (fg_np[:, :, :3].astype(float) * alpha + white_bg.astype(float) * (1 - alpha)).astype(np.uint8)
             result = Image.fromarray(result_np)
             return result
         else:
