@@ -69,11 +69,23 @@ def get_head_eye_positions(landmarks, img_h, img_w):
 def remove_background(img_pil, brightness_factor=1.0):
     try:
         if REMBG_AVAILABLE:
-            # Minimal preprocessing to preserve original colors
+            # Convert to numpy array for processing
             cv_img = np.array(img_pil)
+            h, w = cv_img.shape[:2]
+
+            # Get face landmarks to determine hairline region
+            landmarks = get_face_landmarks(cv_img)
+            top_y, _, _ = get_head_eye_positions(landmarks, h, w)
+            hair_region_height = int(h * 0.3)  # Adjust top 30% of image for hair brightness
+
+            # Apply localized brightness boost to hair region
             if brightness_factor != 1.0:
-                cv_img = cv2.convertScaleAbs(cv_img, alpha=brightness_factor, beta=0)
-            # Avoid sharpening to prevent color alteration
+                cv_img_top = cv_img[:hair_region_height, :, :].astype(float)
+                cv_img_top = cv_img_top * brightness_factor
+                cv_img_top = np.clip(cv_img_top, 0, 255).astype(np.uint8)
+                cv_img[:hair_region_height, :, :] = cv_img_top
+
+            # Convert back to PIL for rembg
             img_pil = Image.fromarray(cv_img)
 
             # Remove background with rembg
@@ -81,13 +93,11 @@ def remove_background(img_pil, brightness_factor=1.0):
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Preserve hair edges with a conservative alpha threshold
+            # Preserve hair edges with minimal processing
             fg_np = np.array(fg)
             alpha = fg_np[:, :, 3] / 255.0
-            # Apply a very light blur to smooth edges without losing hair detail
             alpha = cv2.GaussianBlur(alpha, (3, 3), sigmaX=0.5)
             alpha = np.stack((alpha, alpha, alpha), axis=2)
-            # Blend with white background, preserving original colors
             white_bg = np.full(fg_np.shape[:2] + (3,), 255, dtype=np.uint8)
             result_np = (fg_np[:, :, :3].astype(float) * alpha + white_bg.astype(float) * (1 - alpha)).astype(np.uint8)
             result = Image.fromarray(result_np)
@@ -238,7 +248,7 @@ st.sidebar.markdown("""
 
 # Add brightness adjustment slider
 st.sidebar.header("Adjustments")
-brightness_factor = st.sidebar.slider("Brightness Adjustment", 0.8, 1.2, 1.0, 0.05)
+brightness_factor = st.sidebar.slider("Brightness Adjustment", 0.8, 1.5, 1.2, 0.05)  # Increased default to 1.2 for hair
 
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
 
