@@ -2,7 +2,7 @@ import streamlit as st
 from PIL import Image, ImageDraw
 import numpy as np
 import mediapipe as mp
-from dis_bg_remover import BgRemover
+import io
 import warnings
 import sys
 
@@ -11,6 +11,13 @@ try:
     import cv2
 except ImportError as e:
     st.error(f"Failed to import OpenCV: {str(e)}. Please ensure opencv-python-headless is installed.")
+    sys.exit(1)
+
+# Check for backgroundremover import
+try:
+    from backgroundremover import remove
+except ImportError as e:
+    st.error(f"Failed to import backgroundremover: {str(e)}. Please ensure backgroundremover is installed.")
     sys.exit(1)
 
 warnings.filterwarnings('ignore')
@@ -58,10 +65,9 @@ def get_head_eye_positions(landmarks, img_h, img_w):
 
 def remove_background(img_pil):
     try:
-        remover = BgRemover()
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
-        result = remover.remove_bg(b.getvalue(), background_color=(255, 255, 255))
+        result = remove(b.getvalue(), bgcolor=(255, 255, 255, 255))
         return Image.open(io.BytesIO(result)).convert("RGB")
     except Exception as e:
         st.warning(f"Background removal failed: {str(e)}. Using original image.")
