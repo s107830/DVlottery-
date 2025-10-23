@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageDraw, ImageEnhance
+from PIL import Image, ImageDraw
 import numpy as np
 import cv2
 import io
@@ -134,7 +134,7 @@ def draw_guidelines(img, head_info):
         draw.line([(x, eye_band_top), (x + 10, eye_band_top)], fill="green", width=2)
         draw.line([(x, eye_band_bottom), (x + 10, eye_band_bottom)], fill="green", width=2)
 
-    # Labels (safe ASCII)
+    # Labels (ASCII-safe)
     draw.text((10, top_y - 25), "Top of Head", fill="red")
     draw.text((10, eye_y - 15), "Eye Line", fill="red")
     draw.text((10, chin_y - 20), "Chin", fill="red")
@@ -154,7 +154,7 @@ def draw_guidelines(img, head_info):
         draw.line([(w - 20, y), (w, y)], fill="black", width=2)
         draw.text((w - 55, y - 10), f"{i} in", fill="black")
 
-    # PASS/FAIL box (plain text)
+    # PASS/FAIL box (plain ASCII)
     passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
     badge_color = "green" if passed else "red"
     status_text = "PASS" if passed else "FAIL"
@@ -191,10 +191,10 @@ if uploaded:
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Original")
-        st.image(orig, use_container_width=True)
+        st.image(orig, use_column_width=True)
     with col2:
         st.subheader("Processed (600x600)")
-        st.image(overlay, use_container_width=True)
+        st.image(overlay, use_column_width=True)
 
         buf = io.BytesIO()
         processed.save(buf, format="JPEG", quality=95)
