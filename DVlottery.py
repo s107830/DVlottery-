@@ -4,182 +4,123 @@ import numpy as np
 import cv2, io, warnings
 import mediapipe as mp
 from rembg import remove
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 
 # ---------------------- CONFIG ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — AI Auto Adjust v2.7")
+st.title("DV Lottery Photo Editor — Accurate Head/Eye Calibration v3")
 
 MIN_SIZE = 600
 mp_face_mesh = mp.solutions.face_mesh
-HEAD_STD = (0.50, 0.69)
-EYE_STD = (0.56, 0.69)
-HEAD_BABY = (0.45, 0.72)
-EYE_BABY = (0.48, 0.65)
+HEAD_RANGE = (0.50, 0.69)
+EYE_RANGE  = (0.56, 0.69)
 
-# ---------------------- FACE LANDMARKS ----------------------
+# ---------------------- LANDMARK HELPERS ----------------------
 def get_face_landmarks(cv_img):
-    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.3) as fm:
+    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1,
+                               refine_landmarks=True, min_detection_confidence=0.4) as fm:
         res = fm.process(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
         if not res.multi_face_landmarks:
-            raise Exception("No face landmarks found")
+            raise Exception("No face detected")
         return res.multi_face_landmarks[0]
 
-def get_head_positions(landmarks, h, w):
-    top_y = int(landmarks.landmark[10].y * h)
-    chin_y = int(landmarks.landmark[152].y * h)
-    left_eye_y = int(landmarks.landmark[33].y * h)
-    right_eye_y = int(landmarks.landmark[263].y * h)
-    eye_y = (left_eye_y + right_eye_y) // 2
-    face_h = chin_y - top_y
-    shoulder_y = chin_y + int(face_h * 0.8)
-    top_y = max(0, top_y - int(face_h * 0.15))
-    return top_y, chin_y, eye_y, shoulder_y
+def measure_positions(landmarks, h, w):
+    top    = int(landmarks.landmark[10].y * h)
+    chin   = int(landmarks.landmark[152].y * h)
+    left_e = int(landmarks.landmark[33].y * h)
+    right_e= int(landmarks.landmark[263].y * h)
+    eye_y  = (left_e + right_e)//2
+    face_h = chin - top
+    # add 12 % buffer for hair
+    top = max(0, top - int(face_h*0.12))
+    return top, chin, eye_y
 
-def is_baby_photo(landmarks, h, w):
-    try:
-        top_y = landmarks.landmark[10].y * h
-        chin_y = landmarks.landmark[152].y * h
-        left_eye_y = landmarks.landmark[33].y * h
-        right_eye_y = landmarks.landmark[263].y * h
-        eye_y = (left_eye_y + right_eye_y) / 2
-        ratio = (eye_y - top_y) / (chin_y - top_y)
-        return ratio > 0.38
-    except:
-        return False
-
-# ---------------------- BACKGROUND REMOVE ----------------------
+# ---------------------- BACKGROUND ----------------------
 def remove_bg(img):
     try:
         b = io.BytesIO(); img.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        white = Image.new("RGBA", fg.size, (255,255,255,255))
         return Image.alpha_composite(white, fg).convert("RGB")
     except:
         return img
 
-# ---------------------- AUTO CROP ----------------------
-def auto_crop(img_pil, scale_boost=1.0, y_shift=0):
-    cv_img = np.array(img_pil)
-    if len(cv_img.shape) == 2:
-        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-    elif cv_img.shape[2] == 4:
-        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
+# ---------------------- CORE AUTO-CROP ----------------------
+def crop_dv(img_pil, auto=True):
+    cv_img = np.array(img_pil.convert("RGB"))
     h, w = cv_img.shape[:2]
-
     try:
-        landmarks = get_face_landmarks(cv_img)
-        top_y, chin_y, eye_y, shoulder_y = get_head_positions(landmarks, h, w)
-        is_baby = is_baby_photo(landmarks, h, w)
+        lm = get_face_landmarks(cv_img)
+        top, chin, eye_y = measure_positions(lm, h, w)
     except:
-        resized = cv2.resize(cv_img, (MIN_SIZE, MIN_SIZE))
-        return Image.fromarray(resized), {"top_y":150,"chin_y":400,"eye_y":270,"shoulder_y":480,"head_height":250,"is_baby":False}
+        resized = cv2.resize(cv_img,(MIN_SIZE,MIN_SIZE))
+        return Image.fromarray(resized), dict(top_y=150,chin_y=400,eye_y=270,head_h=250)
 
-    # --- precise scaling using head height ---
-    target_head_ratio = 0.60  # ideal DV target (~60% of frame)
-    scale = (MIN_SIZE * target_head_ratio * scale_boost) / (chin_y - top_y)
+    # target head = 60 % of frame, eyes ≈ 58 %
+    head_h = chin - top
+    target_head = 0.60 * MIN_SIZE
+    scale = target_head / head_h
+    new_w,new_h = int(w*scale), int(h*scale)
+    resized = cv2.resize(cv_img,(new_w,new_h))
 
-    # resize image
-    new_w, new_h = int(w * scale), int(h * scale)
-    resized = cv2.resize(cv_img, (new_w, new_h))
-    canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
+    canvas = np.full((MIN_SIZE,MIN_SIZE,3),255,np.uint8)
 
-    # --- vertical alignment using eye position ---
-    target_eye_y = int(MIN_SIZE * 0.58)  # eyes at 58% from bottom
-    y_offset = target_eye_y - eye_y + int(y_shift)
-    x_offset = (MIN_SIZE - new_w)//2
+    # vertical offset so that eyes land near 58 % of image height
+    eye_scaled = eye_y * scale
+    target_eye = MIN_SIZE * 0.58
+    y_off = int(target_eye - eye_scaled)
+    x_off = (MIN_SIZE - new_w)//2
+    y_off = max(min(y_off,MIN_SIZE-new_h),0)
+    canvas[y_off:y_off+new_h,x_off:x_off+new_w] = resized[:MIN_SIZE-y_off,:MIN_SIZE-x_off]
 
-    # clamp inside canvas
-    y_offset = max(min(y_offset, MIN_SIZE - new_h), 0)
-    x_offset = max(min(x_offset, MIN_SIZE - new_w), 0)
-    y_end = min(MIN_SIZE, y_offset + new_h)
-    x_end = min(MIN_SIZE, x_offset + new_w)
-    canvas[y_offset:y_end, x_offset:x_end] = resized[:y_end - y_offset, :x_end - x_offset]
-
-    info = {"top_y": top_y + y_offset, "chin_y": chin_y + y_offset,
-            "eye_y": eye_y + y_offset, "shoulder_y": shoulder_y + y_offset,
-            "head_height": chin_y - top_y, "is_baby": is_baby}
+    info = dict(top_y=top*scale+y_off, chin_y=chin*scale+y_off,
+                eye_y=eye_scaled+y_off, head_h=head_h*scale)
     return Image.fromarray(canvas), info
 
-# ---------------------- DRAW LINES ----------------------
-def draw_guidelines(img, info):
+# ---------------------- DRAW + ANALYZE ----------------------
+def annotate(img, info):
     draw = ImageDraw.Draw(img)
-    w, h = img.size
-    t, c, e = info["top_y"], info["chin_y"], info["eye_y"]
-    head_h = info["head_height"]
-    head_r, eye_r = head_h / h, (h - e) / h
-    if info["is_baby"]:
-        hmin, hmax, emin, emax = HEAD_BABY + EYE_BABY
-    else:
-        hmin, hmax, emin, emax = HEAD_STD + EYE_STD
-    ok = hmin <= head_r <= hmax and emin <= eye_r <= emax
+    w,h = img.size
+    t,c,e = info["top_y"], info["chin_y"], info["eye_y"]
+    head_r = (c - t)/h
+    eye_r  = (h - e)/h
+    ok = HEAD_RANGE[0]<=head_r<=HEAD_RANGE[1] and EYE_RANGE[0]<=eye_r<=EYE_RANGE[1]
     color = "green" if ok else "red"
-    draw.line([(0, t), (w, t)], fill="green", width=2)
-    draw.line([(0, e), (w, e)], fill="orange", width=2)
-    draw.line([(0, c), (w, c)], fill="red", width=2)
-    draw.rectangle([(10, 10), (220, 85)], outline=color, fill="white", width=3)
-    draw.text((20, 15), "PASS" if ok else "FAIL", fill=color)
-    draw.text((20, 35), f"Head: {int(head_r*100)}%", fill="black")
-    draw.text((20, 50), f"Eyes: {int(eye_r*100)}%", fill="black")
-    if info["is_baby"]:
-        draw.text((20, 65), "BABY MODE", fill="orange")
-    return img, head_r, eye_r, ok
-
-# ---------------------- AUTO ADJUST ----------------------
-def auto_adjust(img, info, head_r, eye_r):
-    target_head, target_eye = 0.60, 0.58
-    scale_adj = 1 + (target_head - head_r) * 0.5
-    y_shift = (target_eye - eye_r) * MIN_SIZE * 0.4
-    return auto_crop(img, scale_boost=scale_adj, y_shift=y_shift)
+    draw.line([(0,t),(w,t)],fill="green",width=2)
+    draw.line([(0,e),(w,e)],fill="orange",width=2)
+    draw.line([(0,c),(w,c)],fill="red",width=2)
+    box=[(10,10),(220,85)]
+    draw.rectangle(box,outline=color,fill="white",width=3)
+    draw.text((20,15),"PASS" if ok else "FAIL",fill=color)
+    draw.text((20,35),f"Head: {int(head_r*100)}%",fill="black")
+    draw.text((20,50),f"Eyes: {int(eye_r*100)}%",fill="black")
+    return img,head_r,eye_r,ok
 
 # ---------------------- STREAMLIT UI ----------------------
-st.sidebar.header("DV Lottery Requirements")
 st.sidebar.markdown("""
-- 600×600px white background  
-- Head: 50–69% (baby 45–72%)  
-- Eyes: 56–69% (baby 48–65%)  
-- Shoulders to head only  
+**DV Lottery Requirements**  
+• Image 600×600 white background  
+• Head 50–69 % of frame  
+• Eyes 56–69 % from bottom  
+• Centered, front-facing, neutral expression
 """)
 
-uploaded = st.file_uploader("Upload Photo (JPG/PNG)", type=["jpg", "jpeg", "png"])
-if uploaded:
-    img = Image.open(uploaded).convert("RGB")
-    with st.spinner("Processing..."):
-        clean = remove_bg(img)
-        cropped, info = auto_crop(clean)
-        guided, head_r, eye_r, ok = draw_guidelines(cropped.copy(), info)
+upl = st.file_uploader("Upload photo (JPG/PNG)",type=["jpg","jpeg","png"])
+if upl:
+    src = Image.open(upl).convert("RGB")
+    with st.spinner("Processing photo …"):
+        clean = remove_bg(src)
+        cropped,info = crop_dv(clean)
+        out,hr,er,ok = annotate(cropped.copy(),info)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Original")
-        st.image(img, use_column_width=True)
-    with c2:
-        st.subheader("Processed (600×600)")
-        st.image(guided, use_column_width=True)
+    c1,c2=st.columns(2)
+    c1.image(src,use_column_width=True,caption="Original")
+    c2.image(out,use_column_width=True,caption="Processed 600×600")
 
-        if not ok:
-            if st.button("🧠 Auto Adjust"):
-                fixed, fixed_info = auto_adjust(clean, info, head_r, eye_r)
-                fixed_guided, _, _, ok2 = draw_guidelines(fixed.copy(), fixed_info)
-                st.image(fixed_guided, use_column_width=True,
-                         caption="Auto Adjusted ✅" if ok2 else "Adjusted (retry if needed)")
-                buf2 = io.BytesIO()
-                fixed.save(buf2, format="JPEG", quality=95)
-                st.download_button("📥 Download Adjusted Photo", buf2.getvalue(),
-                                   "dv_auto_fixed.jpg", "image/jpeg")
-        else:
-            buf = io.BytesIO()
-            cropped.save(buf, format="JPEG", quality=95)
-            st.download_button("📥 Download DV Photo", buf.getvalue(),
-                               "dv_photo.jpg", "image/jpeg")
+    buf=io.BytesIO(); cropped.save(buf,format="JPEG",quality=95)
+    st.download_button("📥 Download DV Photo",buf.getvalue(),"dv_photo.jpg","image/jpeg")
 
-    st.info(f"""
-**Analysis:**  
-- Head size: {int(head_r*100)}% {'✅' if ok else '❌'}  
-- Eye position: {int(eye_r*100)}% {'✅' if ok else '❌'}  
-- Baby detected: {'Yes 👶' if info.get('is_baby') else 'No'}  
-""")
+    st.info(f"**Analysis** Head {hr*100:.1f}% | Eyes {er*100:.1f}% → {'✅ Pass' if ok else '❌ Needs adjust'}")
 else:
-    st.write("📸 Upload a photo to auto-crop and auto-fix to DV standard.")
-
-st.caption("DV Lottery Photo Editor v2.7 — Calibrated Auto-Adjust | Shoulders-to-Head Composition")
+    st.write("📸 Upload a photo to auto-crop to DV Lottery standard.")
+st.caption("DV Lottery Photo Editor v3 — Accurate Head/Eye Calibration")
