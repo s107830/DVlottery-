@@ -70,28 +70,36 @@ def get_ear_mask(landmarks, img_h, img_w):
     """Create a mask to protect ear regions based on MediaPipe landmarks."""
     try:
         mask = np.zeros((img_h, img_w), dtype=np.uint8)
-        # Ear landmarks (approximate: left ear 234, right ear 454)
+        # Ear landmarks (left ear: 234, right ear: 454)
         ear_points = [
             (int(landmarks.landmark[234].x * img_w), int(landmarks.landmark[234].y * img_h)),  # Left ear
             (int(landmarks.landmark[454].x * img_w), int(landmarks.landmark[454].y * img_h)),  # Right ear
         ]
-        # Create elliptical regions around ears
+        # Create larger, softer elliptical regions around ears
         for x, y in ear_points:
-            cv2.ellipse(mask, (x, y), (30, 50), 0, 0, 360, 255, -1)  # Adjusted size for ear coverage
+            # Increased ellipse size and softened edges
+            cv2.ellipse(mask, (x, y), (40, 60), 0, 0, 360, 255, -1)  # Larger ellipse
+            # Apply Gaussian blur to soften mask edges
+            mask = cv2.GaussianBlur(mask, (9, 9), 0)
+            # Threshold to maintain binary mask
+            _, mask = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
         return mask
     except Exception as e:
         st.warning(f"Error creating ear mask: {str(e)}")
         return np.zeros((img_h, img_w), dtype=np.uint8)
 
-def remove_background(img_pil):
+def remove_background(img_pil, brightness_factor=1.0):
     try:
         if REMBG_AVAILABLE:
-            # Preprocess: Enhance contrast and sharpen
+            # Preprocess: Optional brightness adjustment
             cv_img = np.array(img_pil)
-            cv_img = cv2.convertScaleAbs(cv_img, alpha=1.2, beta=15)  # Increase contrast
-            cv_img = cv2.GaussianBlur(cv_img, (3, 3), 0)  # Light blur to reduce noise
+            if brightness_factor != 1.0:
+                cv_img = cv2.convertScaleAbs(cv_img, alpha=brightness_factor, beta=0)
+            # Light blur to reduce noise
+            cv_img = cv2.GaussianBlur(cv_img, (3, 3), 0)
+            # Sharpen
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-            cv_img = cv2.filter2D(cv_img, -1, kernel)  # Sharpen
+            cv_img = cv2.filter2D(cv_img, -1, kernel)
             img_pil = Image.fromarray(cv_img)
 
             # Get ear mask before background removal
@@ -106,13 +114,13 @@ def remove_background(img_pil):
             # Post-process: Clean up alpha mask
             fg_np = np.array(fg)
             alpha = fg_np[:, :, 3]
-            # Apply binary threshold
-            _, alpha = cv2.threshold(alpha, 230, 255, cv2.THRESH_BINARY)
+            # Softer threshold to preserve details
+            _, alpha = cv2.threshold(alpha, 200, 255, cv2.THRESH_BINARY)
             # Smooth edges with Gaussian blur
             alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
-            # Morphological operations: Dilate then erode to remove dots and fill gaps
-            kernel = np.ones((3, 3), np.uint8)
-            alpha = cv2.dilate(alpha, kernel, iterations=2)
+            # Morphological operations: Reduced dilation to avoid artifacts
+            kernel = np.ones((2, 2), np.uint8)
+            alpha = cv2.dilate(alpha, kernel, iterations=1)
             alpha = cv2.erode(alpha, kernel, iterations=1)
             # Protect ear regions
             alpha = cv2.bitwise_or(alpha, ear_mask[:alpha.shape[0], :alpha.shape[1]])
@@ -267,6 +275,10 @@ st.sidebar.markdown("""
 - No glasses, hats, or shadows
 """)
 
+# Add brightness adjustment slider
+st.sidebar.header("Adjustments")
+brightness_factor = st.sidebar.slider("Brightness Adjustment", 0.8, 1.2, 1.0, 0.05)
+
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
 
 if uploaded:
@@ -276,7 +288,7 @@ if uploaded:
             st.warning("Image is too small. Please upload a photo at least 600x600 pixels.")
         else:
             with st.spinner("Processing photo..."):
-                bg_removed = remove_background(orig)
+                bg_removed = remove_background(orig, brightness_factor=brightness_factor)
                 processed, head_info = auto_crop_dv(bg_removed)
                 overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
             col1, col2 = st.columns(2)
