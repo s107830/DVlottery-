@@ -310,4 +310,43 @@ st.sidebar.markdown("""
 st.sidebar.header("Adjustments")
 brightness_factor = st.sidebar.slider("Brightness Adjustment", 0.8, 1.2, 1.0, 0.05)
 
-uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "
+uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
+
+if uploaded:
+    try:
+        orig = Image.open(uploaded).convert("RGB")
+        if orig.size[0] < MIN_SIZE or orig.size[1] < MIN_SIZE:
+            st.warning("Image is too small. Please upload a photo at least 600x600 pixels.")
+        else:
+            with st.spinner("Processing photo..."):
+                bg_removed = remove_background(orig, brightness_factor=brightness_factor)
+                processed, head_info = auto_crop_dv(bg_removed)
+                overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("Original")
+                st.image(orig, use_column_width=True)
+            with col2:
+                st.subheader("Processed (600x600)")
+                st.image(overlay, use_column_width=True)
+
+                # Save with DPI metadata for DV compliance
+                buf = io.BytesIO()
+                processed.save(buf, format="JPEG", quality=95, dpi=(DPI, DPI))
+                st.download_button(
+                    label="Download Final 600x600 Photo",
+                    data=buf.getvalue(),
+                    file_name="dv_photo_final.jpg",
+                    mime="image/jpeg"
+                )
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+else:
+    st.markdown("""
+    ## Welcome to the DV Lottery Photo Editor  
+    Upload your photo above to generate a perfect 600x600 DV-compliant image  
+    with official guideline lines, inch rulers, and pass/fail verification.
+    """)
+
+st.markdown("---")
+st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (ASCII-safe)")
