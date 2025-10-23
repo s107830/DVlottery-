@@ -8,6 +8,13 @@ from transparent_background import Remover
 import warnings
 warnings.filterwarnings('ignore')
 
+# Try importing dis-bg-remover as a fallback
+try:
+    from dis_bg_remover import BgRemover
+    DIS_BG_AVAILABLE = True
+except ImportError:
+    DIS_BG_AVAILABLE = False
+
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
 st.title("DV Lottery Photo Editor — Auto Correction & Official DV Guidelines")
@@ -43,14 +50,27 @@ def get_head_eye_positions(landmarks, img_h, img_w):
 
 def remove_background(img_pil):
     try:
-        # Initialize transparent-background remover
-        remover = Remover(mode='torchlit')  # 'torchlit' for sharper edges
-        # Process image and set white background
-        fg = remover.process(img_pil, type='white')  # Directly outputs RGB with white background
+        # Try transparent-background first
+        remover = Remover()  # Default mode, no 'torchlit'
+        fg = remover.process(img_pil, type='white')  # White background for DV lottery
         return fg.convert("RGB")
     except Exception as e:
-        st.warning(f"Background removal failed: {str(e)}. Using original image.")
-        return img_pil.convert("RGB")
+        st.warning(f"transparent-background failed: {str(e)}. Trying fallback...")
+        
+        # Fallback to dis-bg-remover if available
+        if DIS_BG_AVAILABLE:
+            try:
+                remover = BgRemover()
+                b = io.BytesIO()
+                img_pil.save(b, format="PNG")
+                result = remover.remove_bg(b.getvalue(), background_color=(255, 255, 255))
+                return Image.open(io.BytesIO(result)).convert("RGB")
+            except Exception as e2:
+                st.warning(f"dis-bg-remover failed: {str(e2)}. Using original image.")
+                return img_pil.convert("RGB")
+        else:
+            st.warning("No fallback available (dis-bg-remover not installed). Using original image.")
+            return img_pil.convert("RGB")
 
 # ---------------------- AUTO CROP ----------------------
 def auto_crop_dv(img_pil):
