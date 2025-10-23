@@ -66,27 +66,56 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         st.error(f"Error calculating head/eye positions: {str(e)}")
         raise
 
+def get_ear_mask(landmarks, img_h, img_w):
+    """Create a mask to protect ear regions based on MediaPipe landmarks."""
+    try:
+        mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        # Ear landmarks (approximate: left ear 234, right ear 454)
+        ear_points = [
+            (int(landmarks.landmark[234].x * img_w), int(landmarks.landmark[234].y * img_h)),  # Left ear
+            (int(landmarks.landmark[454].x * img_w), int(landmarks.landmark[454].y * img_h)),  # Right ear
+        ]
+        # Create elliptical regions around ears
+        for x, y in ear_points:
+            cv2.ellipse(mask, (x, y), (30, 50), 0, 0, 360, 255, -1)  # Adjusted size for ear coverage
+        return mask
+    except Exception as e:
+        st.warning(f"Error creating ear mask: {str(e)}")
+        return np.zeros((img_h, img_w), dtype=np.uint8)
+
 def remove_background(img_pil):
     try:
         if REMBG_AVAILABLE:
-            # Preprocess: Enhance contrast
+            # Preprocess: Enhance contrast and sharpen
             cv_img = np.array(img_pil)
-            cv_img = cv2.convertScaleAbs(cv_img, alpha=1.1, beta=10)  # Increase contrast
+            cv_img = cv2.convertScaleAbs(cv_img, alpha=1.2, beta=15)  # Increase contrast
+            cv_img = cv2.GaussianBlur(cv_img, (3, 3), 0)  # Light blur to reduce noise
+            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+            cv_img = cv2.filter2D(cv_img, -1, kernel)  # Sharpen
             img_pil = Image.fromarray(cv_img)
+
+            # Get ear mask before background removal
+            landmarks = get_face_landmarks(cv_img)
+            ear_mask = get_ear_mask(landmarks, cv_img.shape[0], cv_img.shape[1])
 
             # Remove background with rembg
             b = io.BytesIO()
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Post-process: Clean up alpha mask to remove colored edges
+            # Post-process: Clean up alpha mask
             fg_np = np.array(fg)
             alpha = fg_np[:, :, 3]
-            # Apply binary threshold to make edges sharp
-            _, alpha = cv2.threshold(alpha, 240, 255, cv2.THRESH_BINARY)
-            # Erode to remove thin edge artifacts
+            # Apply binary threshold
+            _, alpha = cv2.threshold(alpha, 230, 255, cv2.THRESH_BINARY)
+            # Smooth edges with Gaussian blur
+            alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
+            # Morphological operations: Dilate then erode to remove dots and fill gaps
             kernel = np.ones((3, 3), np.uint8)
+            alpha = cv2.dilate(alpha, kernel, iterations=2)
             alpha = cv2.erode(alpha, kernel, iterations=1)
+            # Protect ear regions
+            alpha = cv2.bitwise_or(alpha, ear_mask[:alpha.shape[0], :alpha.shape[1]])
             fg_np[:, :, 3] = alpha
             fg = Image.fromarray(fg_np)
 
@@ -166,10 +195,10 @@ def draw_guidelines(img, head_info):
         draw = ImageDraw.Draw(img)
         w, h = img.size
         cx = w // 2
-        top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
+        top_y, chin_y, ear_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
         head_h = head_info["head_height"]
         head_ratio = head_h / h
-        eye_ratio = (h - eye_y) / h
+        eye_ratio = (h - ear_y) / h
 
         head_color = "green" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "red"
         eye_color = "green" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "red"
@@ -181,7 +210,7 @@ def draw_guidelines(img, head_info):
 
         # Red guideline lines
         draw.line([(0, top_y), (w, top_y)], fill="red", width=3)
-        draw.line([(0, eye_y), (w, eye_y)], fill="red", width=3)
+        draw.line([(0, ear_y), (w, ear_y)], fill="red", width=3)
         draw.line([(0, chin_y), (w, chin_y)], fill="red", width=3)
 
         # Green dashed eye band
@@ -191,7 +220,7 @@ def draw_guidelines(img, head_info):
 
         # Labels (ASCII-safe)
         draw.text((10, top_y - 25), "Top of Head", fill="red")
-        draw.text((10, eye_y - 15), "Eye Line", fill="red")
+        draw.text((10, ear_y - 15), "Eye Line", fill="red")
         draw.text((10, chin_y - 20), "Chin", fill="red")
         draw.text((w - 240, eye_band_top - 20), "1 inch to 1-3/8 inch", fill="green")
         draw.text((w - 300, eye_band_bottom + 5), "1-1/8 inch to 1-3/8 inch from bottom", fill="green")
