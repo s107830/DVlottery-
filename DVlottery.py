@@ -1,240 +1,413 @@
-import streamlit as st
-from PIL import Image, ImageDraw
-import numpy as np
-import cv2
 import io
-import mediapipe as mp
-from transparent_background import Remover
-import warnings
-warnings.filterwarnings('ignore')
+import os
+import sys
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
 
-# Try importing dis-bg-remover as a fallback
 try:
-    from dis_bg_remover import BgRemover
-    DIS_BG_AVAILABLE = True
+    from rembg import remove, new_session
+    REMBG_AVAILABLE = True
 except ImportError:
-    DIS_BG_AVAILABLE = False
+    REMBG_AVAILABLE = False
+    print("⚠️  rembg not installed. Please install: pip install rembg")
 
-# ---------------------- PAGE SETUP ----------------------
-st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Auto Correction & Official DV Guidelines")
+try:
+    import cv2
+    OPENCV_AVAILABLE = True
+except ImportError:
+    OPENCV_AVAILABLE = False
+    print("⚠️  opencv not installed. Please install: pip install opencv-python")
 
-# ---------------------- CONSTANTS ----------------------
-MIN_SIZE = 600
-HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
-EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
-DPI = 300  # 2x2 inch photo at 300 DPI
-mp_face_mesh = mp.solutions.face_mesh
-
-# ---------------------- FACE UTILITIES ----------------------
-def get_face_landmarks(cv_img):
-    with mp_face_mesh.FaceMesh(
-        static_image_mode=True, max_num_faces=1, refine_landmarks=True,
-        min_detection_confidence=0.4, min_tracking_confidence=0.4
-    ) as fm:
-        img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        results = fm.process(img_rgb)
-        if not results.multi_face_landmarks:
-            raise Exception("No face landmarks found")
-        return results.multi_face_landmarks[0]
-
-def get_head_eye_positions(landmarks, img_h, img_w):
-    top_y = int(landmarks.landmark[10].y * img_h)
-    chin_y = int(landmarks.landmark[152].y * img_h)
-    left_eye_y = int(landmarks.landmark[33].y * img_h)
-    right_eye_y = int(landmarks.landmark[263].y * img_h)
-    eye_y = (left_eye_y + right_eye_y) // 2
-    hair_buffer = int((chin_y - top_y) * 0.25)
-    top_y = max(0, top_y - hair_buffer)
-    return top_y, chin_y, eye_y
-
-def remove_background(img_pil):
-    try:
-        # Try transparent-background first
-        remover = Remover()  # Default mode, no 'torchlit'
-        fg = remover.process(img_pil, type='white')  # White background for DV lottery
-        return fg.convert("RGB")
-    except Exception as e:
-        st.warning(f"transparent-background failed: {str(e)}. Trying fallback...")
+class BackgroundRemovalTester:
+    def __init__(self):
+        self.models = {
+            "u2net": "u2net",                      # Default
+            "u2netp": "u2netp",                    # Lightweight
+            "u2net_human_seg": "u2net_human_seg",  # Specialized for humans
+            "isnet-general-use": "isnet-general-use",  # Best for general use
+            "isnet-anime": "isnet-anime",          # For anime/cartoon
+        }
         
-        # Fallback to dis-bg-remover if available
-        if DIS_BG_AVAILABLE:
+    def check_dependencies(self):
+        """Check if required dependencies are available"""
+        if not REMBG_AVAILABLE:
+            print("❌ rembg is required for background removal")
+            return False
+        return True
+    
+    def load_image(self, image_path):
+        """Load and validate image"""
+        try:
+            if not os.path.exists(image_path):
+                print(f"❌ Image not found: {image_path}")
+                return None
+            
+            img = Image.open(image_path)
+            print(f"✅ Image loaded: {img.size[0]}x{img.size[1]} | Format: {img.format}")
+            return img.convert("RGB")
+        except Exception as e:
+            print(f"❌ Error loading image: {e}")
+            return None
+    
+    def remove_bg_original(self, img):
+        """Your original function"""
+        try:
+            b = io.BytesIO()
+            img.save(b, format="PNG")
+            fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+            return Image.alpha_composite(white, fg).convert("RGB")
+        except Exception as e:
+            print(f"❌ Original method failed: {e}")
+            return img
+    
+    def remove_bg_high_res(self, img):
+        """Higher resolution approach"""
+        try:
+            original_size = img.size
+            print(f"📐 Original size: {original_size}")
+            
+            # Upscale for better detail capture (if image is small)
+            if max(img.size) < 1200:
+                scale_factor = 2
+                new_size = (img.size[0] * scale_factor, img.size[1] * scale_factor)
+                img_high_res = img.resize(new_size, Image.Resampling.LANCZOS)
+                print(f"🔼 Upscaled to: {new_size}")
+            else:
+                img_high_res = img
+                print("ℹ️  Using original resolution (already large)")
+            
+            b = io.BytesIO()
+            img_high_res.save(b, format="PNG", quality=100)
+            fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+            
+            # Resize back to original if we upscaled
+            if max(img.size) < 1200:
+                fg = fg.resize(original_size, Image.Resampling.LANCZOS)
+                print("🔽 Resized back to original")
+            
+            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+            result = Image.alpha_composite(white, fg).convert("RGB")
+            print("✅ High-res method completed")
+            return result
+        except Exception as e:
+            print(f"❌ High-res method failed: {e}")
+            return img
+    
+    def remove_bg_different_model(self, img, model_name="isnet-general-use"):
+        """Try different AI models"""
+        try:
+            if model_name not in self.models:
+                print(f"❌ Model {model_name} not found")
+                return img
+            
+            print(f"🤖 Using model: {model_name}")
+            session = new_session(self.models[model_name])
+            
+            b = io.BytesIO()
+            img.save(b, format="PNG")
+            fg = Image.open(io.BytesIO(remove(b.getvalue(), session=session))).convert("RGBA")
+            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+            result = Image.alpha_composite(white, fg).convert("RGB")
+            print(f"✅ Model {model_name} completed")
+            return result
+        except Exception as e:
+            print(f"❌ Model {model_name} failed: {e}")
+            return img
+    
+    def sharpen_edges(self, image):
+        """Post-processing edge sharpening"""
+        if not OPENCV_AVAILABLE:
+            print("⚠️  OpenCV not available for edge sharpening")
+            return image
+            
+        try:
+            img_array = np.array(image)
+            
+            # Multiple sharpening techniques
+            # Method 1: Sharpening kernel
+            kernel = np.array([[-1, -1, -1],
+                              [-1,  9, -1],
+                              [-1, -1, -1]])
+            sharpened = cv2.filter2D(img_array, -1, kernel)
+            
+            # Method 2: Unsharp masking (optional - more aggressive)
+            # gaussian = cv2.GaussianBlur(sharpened, (0, 0), 2.0)
+            # sharpened = cv2.addWeighted(sharpened, 1.5, gaussian, -0.5, 0)
+            
+            print("✅ Edge sharpening applied")
+            return Image.fromarray(sharpened)
+        except Exception as e:
+            print(f"❌ Edge sharpening failed: {e}")
+            return image
+    
+    def remove_bg_with_edge_enhancement(self, img):
+        """Combined approach with edge enhancement"""
+        try:
+            print("🚀 Starting high-res + edge enhancement method")
+            result = self.remove_bg_high_res(img)
+            result_sharp = self.sharpen_edges(result)
+            print("✅ Edge enhancement completed")
+            return result_sharp
+        except Exception as e:
+            print(f"❌ Edge enhancement method failed: {e}")
+            return img
+    
+    def remove_bg_advanced_hair(self, img):
+        """Specialized method for hair details"""
+        try:
+            print("💇 Advanced hair detail method started")
+            
+            # Use the best model for human subjects
+            session = new_session("isnet-general-use")
+            
+            # Process at high resolution
+            original_size = img.size
+            if max(img.size) < 1500:
+                scale_factor = 1.5
+                new_size = (int(img.size[0] * scale_factor), int(img.size[1] * scale_factor))
+                img_processed = img.resize(new_size, Image.Resampling.LANCZOS)
+            else:
+                img_processed = img
+            
+            b = io.BytesIO()
+            img_processed.save(b, format="PNG", quality=100)
+            fg = Image.open(io.BytesIO(remove(b.getvalue(), session=session))).convert("RGBA")
+            
+            # Resize back if needed
+            if max(img.size) < 1500:
+                fg = fg.resize(original_size, Image.Resampling.LANCZOS)
+            
+            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+            result = Image.alpha_composite(white, fg).convert("RGB")
+            
+            # Apply gentle sharpening
+            if OPENCV_AVAILABLE:
+                result = self.sharpen_edges(result)
+            
+            print("✅ Advanced hair method completed")
+            return result
+        except Exception as e:
+            print(f"❌ Advanced hair method failed: {e}")
+            return img
+    
+    def create_comparison_grid(self, results_dict, save_path="bg_removal_comparison.jpg"):
+        """Create a grid to compare all results"""
+        try:
+            if not results_dict:
+                print("❌ No results to compare")
+                return None
+            
+            print("🖼️ Creating comparison grid...")
+            
+            # Calculate grid size
+            n_methods = len(results_dict)
+            grid_cols = min(3, n_methods)
+            grid_rows = (n_methods + grid_cols - 1) // grid_cols
+            
+            # Get image size from first result
+            sample_img = list(results_dict.values())[0]
+            img_width, img_height = sample_img.size
+            
+            # Create grid with some spacing
+            spacing = 10
+            label_height = 40
+            grid_width = img_width * grid_cols + spacing * (grid_cols + 1)
+            grid_height = (img_height + label_height) * grid_rows + spacing * (grid_rows + 1)
+            
+            grid = Image.new('RGB', (grid_width, grid_height), 'lightgray')
+            draw = ImageDraw.Draw(grid)
+            
+            # Try to load font
             try:
-                remover = BgRemover()
-                b = io.BytesIO()
-                img_pil.save(b, format="PNG")
-                result = remover.remove_bg(b.getvalue(), background_color=(255, 255, 255))
-                return Image.open(io.BytesIO(result)).convert("RGB")
-            except Exception as e2:
-                st.warning(f"dis-bg-remover failed: {str(e2)}. Using original image.")
-                return img_pil.convert("RGB")
-        else:
-            st.warning("No fallback available (dis-bg-remover not installed). Using original image.")
-            return img_pil.convert("RGB")
+                font = ImageFont.truetype("arial.ttf", 24)
+            except:
+                try:
+                    font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 24)
+                except:
+                    font = ImageFont.load_default()
+            
+            # Paste images in grid
+            for idx, (method_name, img) in enumerate(results_dict.items()):
+                row = idx // grid_cols
+                col = idx % grid_cols
+                
+                # Calculate position
+                x = col * (img_width + spacing) + spacing
+                y = row * (img_height + label_height + spacing) + spacing
+                
+                # Resize if needed (should be same size)
+                if img.size != (img_width, img_height):
+                    img = img.resize((img_width, img_height), Image.Resampling.LANCZOS)
+                
+                # Paste image
+                grid.paste(img, (x, y + label_height))
+                
+                # Add label background
+                label_bg = Image.new('RGB', (img_width, label_height), 'darkblue')
+                grid.paste(label_bg, (x, y))
+                
+                # Add method name
+                text_bbox = draw.textbbox((0, 0), method_name, font=font)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_x = x + (img_width - text_width) // 2
+                text_y = y + (label_height - (text_bbox[3] - text_bbox[1])) // 2
+                
+                draw.text((text_x, text_y), method_name, fill='white', font=font)
+            
+            # Save comparison
+            grid.save(save_path, quality=95)
+            print(f"✅ Comparison grid saved as: {save_path}")
+            return grid
+            
+        except Exception as e:
+            print(f"❌ Failed to create comparison grid: {e}")
+            return None
+    
+    def save_individual_results(self, results_dict, base_name="result"):
+        """Save individual result images"""
+        try:
+            os.makedirs("results", exist_ok=True)
+            saved_paths = []
+            
+            for method_name, img in results_dict.items():
+                # Clean filename
+                clean_name = "".join(c for c in method_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
+                filename = f"results/{base_name}_{clean_name}.jpg"
+                img.save(filename, quality=95)
+                saved_paths.append(filename)
+                print(f"💾 Saved: {filename}")
+            
+            return saved_paths
+        except Exception as e:
+            print(f"❌ Failed to save individual results: {e}")
+            return []
+    
+    def compare_all_methods(self, image_path):
+        """Test all methods side by side"""
+        if not self.check_dependencies():
+            return None
+        
+        original_img = self.load_image(image_path)
+        if not original_img:
+            return None
+        
+        print("\n" + "="*60)
+        print("🚀 STARTING BACKGROUND REMOVAL COMPARISON")
+        print("="*60)
+        
+        results = {
+            "01_Original": original_img,
+            "02_Original_Method": self.remove_bg_original(original_img.copy()),
+        }
+        
+        # Test different approaches
+        methods_to_test = [
+            ("03_High_Resolution", self.remove_bg_high_res),
+            ("04_Edge_Enhancement", self.remove_bg_with_edge_enhancement),
+            ("05_Advanced_Hair", self.remove_bg_advanced_hair),
+        ]
+        
+        for method_name, method_func in methods_to_test:
+            print(f"\n--- Testing {method_name} ---")
+            results[method_name] = method_func(original_img.copy())
+        
+        # Test different models (skip if taking too long)
+        print(f"\n--- Testing AI Models ---")
+        quick_models = ["isnet-general-use", "u2net_human_seg", "u2net"]
+        
+        for model_name in quick_models:
+            method_name = f"06_Model_{model_name}"
+            print(f"Testing {method_name}...")
+            results[method_name] = self.remove_bg_different_model(original_img.copy(), model_name)
+        
+        print("\n" + "="*60)
+        print("✅ ALL METHODS COMPLETED")
+        print("="*60)
+        
+        return results
+    
+    def generate_report(self, results):
+        """Generate a simple text report"""
+        print("\n📊 RESULTS SUMMARY:")
+        print("-" * 40)
+        
+        for method_name, img in results.items():
+            if img:
+                size_info = f"{img.size[0]}x{img.size[1]}"
+                print(f"✓ {method_name:<25} {size_info:>15}")
+        
+        print("\n💡 RECOMMENDATIONS:")
+        print("1. Check '05_Advanced_Hair' for best hair details")
+        print("2. '06_Model_isnet-general-use' usually works well for humans")
+        print("3. Compare images side-by-side in the generated grid")
+        print("4. Look for the method with cleanest hair edges")
 
-# ---------------------- AUTO CROP ----------------------
-def auto_crop_dv(img_pil):
-    cv_img = np.array(img_pil)
-    if len(cv_img.shape) == 2:
-        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
-    elif cv_img.shape[2] == 4:
-        cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
+def main():
+    """Main function to run the complete test"""
+    if len(sys.argv) < 2:
+        print("Usage: python bg_removal_test.py <image_path>")
+        print("Example: python bg_removal_test.py my_photo.jpg")
+        return
+    
+    image_path = sys.argv[1]
+    
+    # Initialize tester
+    tester = BackgroundRemovalTester()
+    
+    # Run complete comparison
+    results = tester.compare_all_methods(image_path)
+    
+    if results:
+        # Create base name from input file
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        
+        # Save individual results
+        tester.save_individual_results(results, base_name)
+        
+        # Create comparison grid
+        comparison_path = f"COMPARISON_{base_name}.jpg"
+        tester.create_comparison_grid(results, comparison_path)
+        
+        # Generate report
+        tester.generate_report(results)
+        
+        print(f"\n🎉 COMPLETE! Check these files:")
+        print(f"   • {comparison_path} - Side-by-side comparison")
+        print(f"   • /results/ folder - Individual result images")
+        
+    else:
+        print("❌ Testing failed. Please check the errors above.")
 
-    h, w = cv_img.shape[:2]
-    landmarks = get_face_landmarks(cv_img)
-    top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
-    head_h = chin_y - top_y
-
-    # Target head height ~63% of 600px = 378px
-    target_head = MIN_SIZE * 0.63
-    scale = target_head / head_h
-    new_w, new_h = int(w * scale), int(h * scale)
-    resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-
-    canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
-    target_eye_min = MIN_SIZE - int(EYE_MAX_RATIO * MIN_SIZE)
-    target_eye_max = MIN_SIZE - int(EYE_MIN_RATIO * MIN_SIZE)
-    target_eye = (target_eye_min + target_eye_max) // 2
-
-    landmarks_resized = get_face_landmarks(resized)
-    top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
-    y_offset = target_eye - eye_y
-    x_offset = (MIN_SIZE - new_w) // 2
-
-    y_start_dst = max(0, y_offset)
-    y_end_dst = min(MIN_SIZE, y_offset + new_h)
-    x_start_dst = max(0, x_offset)
-    x_end_dst = min(MIN_SIZE, x_offset + new_w)
-
-    y_start_src = max(0, -y_offset)
-    y_end_src = min(new_h, MIN_SIZE - y_offset)
-    x_start_src = max(0, -x_offset)
-    x_end_src = min(new_w, MIN_SIZE - x_offset)
-
-    canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
-        resized[y_start_src:y_end_src, x_start_src:x_end_src]
-
-    final_top_y = top_y + y_offset
-    final_chin_y = chin_y + y_offset
-    final_eye_y = eye_y + y_offset
-
-    head_info = {
-        "top_y": final_top_y,
-        "chin_y": final_chin_y,
-        "eye_y": final_eye_y,
-        "head_height": chin_y - top_y,
-        "canvas_size": MIN_SIZE
+# Quick test function for easy use
+def quick_test(image_path, method="advanced_hair"):
+    """Quick test with a single method"""
+    tester = BackgroundRemovalTester()
+    
+    if not tester.check_dependencies():
+        return None
+    
+    img = tester.load_image(image_path)
+    if not img:
+        return None
+    
+    method_map = {
+        "original": tester.remove_bg_original,
+        "high_res": tester.remove_bg_high_res,
+        "advanced_hair": tester.remove_bg_advanced_hair,
+        "isnet": lambda x: tester.remove_bg_different_model(x, "isnet-general-use"),
     }
-    return Image.fromarray(canvas), head_info
+    
+    if method in method_map:
+        result = method_map[method](img)
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        output_path = f"QUICK_RESULT_{base_name}.jpg"
+        result.save(output_path, quality=95)
+        print(f"✅ Quick result saved: {output_path}")
+        return result
+    else:
+        print(f"❌ Unknown method: {method}")
+        return None
 
-# ---------------------- DRAW DV GUIDELINES ----------------------
-def draw_guidelines(img, head_info):
-    draw = ImageDraw.Draw(img)
-    w, h = img.size
-    cx = w // 2
-    top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
-    head_h = head_info["head_height"]
-    head_ratio = head_h / h
-    eye_ratio = (h - eye_y) / h
-
-    head_color = "green" if HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO else "red"
-    eye_color = "green" if EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO else "red"
-
-    eye_min_px = int(1.125 * DPI)
-    eye_max_px = int(1.375 * DPI)
-    eye_band_top = h - eye_max_px
-    eye_band_bottom = h - eye_min_px
-
-    # Red guideline lines
-    draw.line([(0, top_y), (w, top_y)], fill="red", width=3)
-    draw.line([(0, eye_y), (w, eye_y)], fill="red", width=3)
-    draw.line([(0, chin_y), (w, chin_y)], fill="red", width=3)
-
-    # Green dashed eye band
-    for x in range(0, w, 20):
-        draw.line([(x, eye_band_top), (x + 10, eye_band_top)], fill="green", width=2)
-        draw.line([(x, eye_band_bottom), (x + 10, eye_band_bottom)], fill="green", width=2)
-
-    # Labels (ASCII-safe)
-    draw.text((10, top_y - 25), "Top of Head", fill="red")
-    draw.text((10, eye_y - 15), "Eye Line", fill="red")
-    draw.text((10, chin_y - 20), "Chin", fill="red")
-    draw.text((w - 240, eye_band_top - 20), "1 inch to 1-3/8 inch", fill="green")
-    draw.text((w - 300, eye_band_bottom + 5), "1-1/8 inch to 1-3/8 inch from bottom", fill="green")
-
-    # 2x2 box outline & center line
-    draw.rectangle([(0, 0), (w - 1, h - 1)], outline="black", width=3)
-    draw.line([(cx, 0), (cx, h)], fill="gray", width=1)
-
-    # Vertical inch rulers (left & right)
-    inch_px = DPI
-    for i in range(3):
-        y = i * inch_px
-        draw.line([(0, y), (20, y)], fill="black", width=2)
-        draw.text((25, y - 10), f"{i} in", fill="black")
-        draw.line([(w - 20, y), (w, y)], fill="black", width=2)
-        draw.text((w - 55, y - 10), f"{i} in", fill="black")
-
-    # PASS/FAIL box (plain ASCII)
-    passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
-    badge_color = "green" if passed else "red"
-    status_text = "PASS" if passed else "FAIL"
-    draw.rectangle([(10, 10), (170, 60)], fill="white", outline=badge_color, width=3)
-    draw.text((25, 20), status_text, fill=badge_color)
-    draw.text((25, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
-
-    return img, head_ratio, eye_ratio
-
-# ---------------------- STREAMLIT UI ----------------------
-st.sidebar.header("Instructions")
-st.sidebar.markdown("""
-1. Upload a clear front-facing photo.
-2. The tool removes the background & centers your face.
-3. Crops & scales to official 2x2 inch (600x600 px) size.
-4. Draws DV guidelines and compliance ruler.
-
-**DV Requirements:**
-- Head height: 50–69% of image  
-- Eyes: 1-1/8–1-3/8 inch from bottom  
-- Plain white background  
-- Neutral expression, both eyes open  
-- No glasses, hats, or shadows
-""")
-
-uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
-
-if uploaded:
-    try:
-        orig = Image.open(uploaded).convert("RGB")
-        with st.spinner("Processing photo..."):
-            bg_removed = remove_background(orig)
-            processed, head_info = auto_crop_dv(bg_removed)
-            overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Original")
-            st.image(orig, use_column_width=True)
-        with col2:
-            st.subheader("Processed (600x600)")
-            st.image(overlay, use_column_width=True)
-
-            # Save with DPI metadata for DV compliance
-            buf = io.BytesIO()
-            processed.save(buf, format="JPEG", quality=95, dpi=(DPI, DPI))
-            st.download_button(
-                label="Download Final 600x600 Photo",
-                data=buf.getvalue(),
-                file_name="dv_photo_final.jpg",
-                mime="image/jpeg"
-            )
-    except Exception as e:
-        st.error(f"Error processing image: {str(e)}")
-else:
-    st.markdown("""
-    ## Welcome to the DV Lottery Photo Editor  
-    Upload your photo above to generate a perfect 600x600 DV-compliant image  
-    with official guideline lines, inch rulers, and pass/fail verification.
-    """)
-
-st.markdown("---")
-st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (ASCII-safe)")
+if __name__ == "__main__":
+    main()
