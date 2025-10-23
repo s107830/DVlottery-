@@ -4,9 +4,8 @@ pillow==10.0.1
 numpy==1.26.0
 opencv-python-headless==4.8.1.78
 mediapipe==0.10.21
-background-remover==0.2.6
 rembg==2.0.67
 onnxruntime==1.17.0
-markdown-it-py==4.0.0
+markdown-it-py==3.0.0
 mdurl==0.1.2
-pygments==2.19.2
+pygments==2.18.0
