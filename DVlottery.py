@@ -69,13 +69,11 @@ def get_head_eye_positions(landmarks, img_h, img_w):
 def remove_background(img_pil, brightness_factor=1.0):
     try:
         if REMBG_AVAILABLE:
-            # Preprocess: Optional brightness adjustment
+            # Minimal preprocessing to preserve original colors
             cv_img = np.array(img_pil)
             if brightness_factor != 1.0:
                 cv_img = cv2.convertScaleAbs(cv_img, alpha=brightness_factor, beta=0)
-            cv_img = cv2.GaussianBlur(cv_img, (3, 3), 0)
-            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-            cv_img = cv2.filter2D(cv_img, -1, kernel)
+            # Avoid sharpening to prevent color alteration
             img_pil = Image.fromarray(cv_img)
 
             # Remove background with rembg
@@ -83,13 +81,13 @@ def remove_background(img_pil, brightness_factor=1.0):
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Improve edge preservation for hair
+            # Preserve hair edges with a conservative alpha threshold
             fg_np = np.array(fg)
             alpha = fg_np[:, :, 3] / 255.0
-            # Apply a slight edge enhancement to preserve hair details
-            alpha = cv2.GaussianBlur(alpha, (5, 5), sigmaX=1.0)
+            # Apply a very light blur to smooth edges without losing hair detail
+            alpha = cv2.GaussianBlur(alpha, (3, 3), sigmaX=0.5)
             alpha = np.stack((alpha, alpha, alpha), axis=2)
-            # Blend with white background
+            # Blend with white background, preserving original colors
             white_bg = np.full(fg_np.shape[:2] + (3,), 255, dtype=np.uint8)
             result_np = (fg_np[:, :, :3].astype(float) * alpha + white_bg.astype(float) * (1 - alpha)).astype(np.uint8)
             result = Image.fromarray(result_np)
