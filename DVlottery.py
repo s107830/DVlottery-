@@ -7,8 +7,8 @@ from rembg import remove
 warnings.filterwarnings('ignore')
 
 # ---------------------- CONFIG ----------------------
-st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Auto Adjust Enabled")
+st.set_page_config(page_title="DV Lottery Auto Photo Editor", layout="wide")
+st.title("DV Lottery Photo Editor — AI Auto Adjust v2.6")
 
 MIN_SIZE = 600
 mp_face_mesh = mp.solutions.face_mesh
@@ -17,7 +17,7 @@ EYE_STD = (0.56, 0.69)
 HEAD_BABY = (0.45, 0.72)
 EYE_BABY = (0.48, 0.65)
 
-# ---------------------- FACE LANDMARKS ----------------------
+# ---------------------- FACE UTILITIES ----------------------
 def get_face_landmarks(cv_img):
     with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.3) as fm:
         res = fm.process(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
@@ -48,11 +48,9 @@ def is_baby_photo(landmarks, h, w):
     except:
         return False
 
-# ---------------------- BACKGROUND REMOVE ----------------------
 def remove_bg(img):
     try:
-        b = io.BytesIO()
-        img.save(b, format="PNG")
+        b = io.BytesIO(); img.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
         white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
         return Image.alpha_composite(white, fg).convert("RGB")
@@ -115,24 +113,28 @@ def draw_guidelines(img, info):
     draw.text((20, 15), "PASS" if ok else "FAIL", fill=color)
     draw.text((20, 35), f"Head: {int(head_r*100)}%", fill="black")
     draw.text((20, 50), f"Eyes: {int(eye_r*100)}%", fill="black")
-    if info["is_baby"]:
-        draw.text((20, 65), "BABY MODE", fill="orange")
+    if info["is_baby"]: draw.text((20, 65), "BABY MODE", fill="orange")
     return img, head_r, eye_r, ok
 
-# ---------------------- AUTO ADJUST LOGIC ----------------------
+# ---------------------- AUTO ADJUST LOOP ----------------------
 def auto_adjust(img, info, head_r, eye_r):
     target_head, target_eye = 0.60, 0.60
-    scale = 1.0 + (target_head - head_r) * 1.2  # zoom in/out
-    y_shift = (target_eye - eye_r) * MIN_SIZE * 0.5
-    return auto_crop(img, scale_boost=scale, y_shift=y_shift)
+    best_img, best_info = img, info
+    for _ in range(3):  # iterative fine tuning
+        scale_adj = 1 + (target_head - head_r) * 0.5  # slower scaling
+        y_shift = (target_eye - eye_r) * MIN_SIZE * 0.4
+        adjusted, new_info = auto_crop(img, scale_boost=scale_adj, y_shift=y_shift)
+        _, head_r, eye_r, ok = draw_guidelines(adjusted.copy(), new_info)
+        best_img, best_info = adjusted, new_info
+        if ok: break
+    return best_img, best_info
 
 # ---------------------- STREAMLIT ----------------------
-st.sidebar.header("DV Lottery Requirements")
+st.sidebar.header("DV Lottery Rules")
 st.sidebar.markdown("""
 - 600×600px white background  
 - Head: 50–69% (baby 45–72%)  
 - Eyes: 56–69% (baby 48–65%)  
-- Shoulders to head only  
 """)
 
 uploaded = st.file_uploader("Upload Photo (JPG/PNG)", type=["jpg", "jpeg", "png"])
@@ -153,11 +155,11 @@ if uploaded:
 
         if not ok:
             if st.button("🧠 Auto Adjust"):
-                adj, adj_info = auto_adjust(clean, info, head_r, eye_r)
-                adj_guided, _, _, _ = draw_guidelines(adj.copy(), adj_info)
-                st.image(adj_guided, use_column_width=True, caption="Auto-Adjusted ✅")
+                fixed, fixed_info = auto_adjust(clean, info, head_r, eye_r)
+                fixed_guided, _, _, ok2 = draw_guidelines(fixed.copy(), fixed_info)
+                st.image(fixed_guided, use_column_width=True, caption="Auto Adjusted ✅" if ok2 else "Adjusted (retry if needed)")
                 buf2 = io.BytesIO()
-                adj.save(buf2, format="JPEG", quality=95)
+                fixed.save(buf2, format="JPEG", quality=95)
                 st.download_button("📥 Download Adjusted Photo", buf2.getvalue(), "dv_auto_fixed.jpg", "image/jpeg")
         else:
             buf = io.BytesIO()
@@ -171,6 +173,5 @@ if uploaded:
 - Baby detected: {'Yes 👶' if info.get('is_baby') else 'No'}  
 """)
 else:
-    st.write("📸 Upload a photo to auto-crop & auto-fix composition for DV standards.")
-
-st.caption("DV Lottery Photo Editor v2.5 — Auto Adjust Enabled | Shoulders to Head AI Tool")
+    st.write("📸 Upload a photo to auto-crop and auto-fix to DV standard.")
+st.caption("DV Lottery Photo Editor v2.6 — Self-Correcting Auto Adjust Mode")
