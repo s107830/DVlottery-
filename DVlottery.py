@@ -10,13 +10,13 @@ warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Clean Hairline & Official DV Guidelines")
+st.title("DV Lottery Photo Editor — Improved Hair Edge & Human Segmentation")
 
 # ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
 HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
 EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
-DPI = 300  # 2x2 inch photo at 300 DPI
+DPI = 300  # 2×2 inch at 300 DPI
 mp_face_mesh = mp.solutions.face_mesh
 
 # ---------------------- FACE UTILITIES ----------------------
@@ -42,57 +42,42 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     return top_y, chin_y, eye_y
 
 # ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
-
-
-def remove_background(img_pil, edge_trim=2, alpha_thresh=180):
+def remove_background(img_pil, edge_trim=3, alpha_thresh=200):
     """
-    Two-stage cleanup:
-    1) hard mask to remove translucent fringe
-    2) color-neutralize edge to kill gray/blue halo
+    Remove background using human-segmentation model + cleanup:
+    - Use hard mask (binary) to eliminate translucent halo.
+    - Optionally trim a few pixels (edge_trim) to tighten hairline.
     """
     try:
-        # --- Run rembg and extract channels ---
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
+
         np_fg = np.array(fg)
-        rgb = np_fg[:, :, :3].astype(np.float32)
+        rgb = np_fg[:, :, :3]
         alpha = np_fg[:, :, 3]
 
-        # --- Stage 1: hard-edge mask ---
+        # 1) Binary mask
         mask = np.where(alpha > alpha_thresh, 255, 0).astype(np.uint8)
+
+        # 2) Trim the edge (erode)
         if edge_trim > 0:
             kernel = np.ones((edge_trim, edge_trim), np.uint8)
             mask = cv2.erode(mask, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=2)
 
-        # --- Stage 2: despill / neutralize near edges ---
-        # Find transition region (~4px rim) where halo usually appears
-        edge = cv2.Laplacian(mask, cv2.CV_8U)
-        edge_mask = cv2.dilate(edge, np.ones((3, 3), np.uint8), iterations=1)
-        edge_mask = cv2.GaussianBlur(edge_mask, (5, 5), 0)
-        edge_mask_f = edge_mask.astype(np.float32) / 255.0
+        # 3) Clean mask
+        kernel2 = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel2, iterations=2)
 
-        # Convert to HSV, reduce saturation near edge (remove color tint)
-        hsv = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
-        h, s, v = cv2.split(hsv)
-        s = s * (1 - 0.8 * edge_mask_f)  # drop saturation up to 80% at rim
-        hsv = cv2.merge([h, s, v])
-        rgb_neutral = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
-
-        # --- Final composite on white ---
-        white = np.full_like(rgb_neutral, 255, np.uint8)
-        composite = np.where(mask[:, :, None] == 255, rgb_neutral, white)
+        # 4) Composite on white
+        white = np.full_like(rgb, 255, np.uint8)
+        composite = np.where(mask[:, :, None] == 255, rgb, white)
 
         return Image.fromarray(composite.astype(np.uint8))
 
     except Exception as e:
         st.warning(f"Background cleanup failed ({e}). Using original image.")
         return img_pil
-
-
-
-
 
 # ---------------------- AUTO CROP ----------------------
 def auto_crop_dv(img_pil):
@@ -109,7 +94,8 @@ def auto_crop_dv(img_pil):
 
     target_head = MIN_SIZE * 0.63
     scale = target_head / head_h
-    new_w, new_h = int(w * scale), int(h * scale)
+    new_w = int(w * scale)
+    new_h = int(h * scale)
     resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
     canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
@@ -118,8 +104,8 @@ def auto_crop_dv(img_pil):
     target_eye = (target_eye_min + target_eye_max) // 2
 
     landmarks_resized = get_face_landmarks(resized)
-    top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
-    y_offset = target_eye - eye_y
+    top_y_r, chin_y_r, eye_y_r = get_head_eye_positions(landmarks_resized, resized.shape[0], resized.shape[1])
+    y_offset = target_eye - eye_y_r
     x_offset = (MIN_SIZE - new_w) // 2
 
     y_start_dst = max(0, y_offset)
@@ -135,26 +121,29 @@ def auto_crop_dv(img_pil):
     canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
         resized[y_start_src:y_end_src, x_start_src:x_end_src]
 
-    final_top_y = top_y + y_offset
-    final_chin_y = chin_y + y_offset
-    final_eye_y = eye_y + y_offset
+    final_top_y = top_y_r + y_offset
+    final_chin_y = chin_y_r + y_offset
+    final_eye_y = eye_y_r + y_offset
 
     head_info = {
         "top_y": final_top_y,
         "chin_y": final_chin_y,
         "eye_y": final_eye_y,
-        "head_height": chin_y - top_y,
+        "head_height": chin_y_r - top_y_r,
         "canvas_size": MIN_SIZE
     }
     return Image.fromarray(canvas), head_info
 
-# ---------------------- DRAW DV GUIDELINES ----------------------
+# ---------------------- DRAW GUIDELINES ----------------------
 def draw_guidelines(img, head_info):
     draw = ImageDraw.Draw(img)
     w, h = img.size
     cx = w // 2
-    top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
+    top_y = head_info["top_y"]
+    chin_y = head_info["chin_y"]
+    eye_y = head_info["eye_y"]
     head_h = head_info["head_height"]
+
     head_ratio = head_h / h
     eye_ratio = (h - eye_y) / h
 
@@ -166,28 +155,23 @@ def draw_guidelines(img, head_info):
     eye_band_top = h - eye_max_px
     eye_band_bottom = h - eye_min_px
 
-    # Red guideline lines
     draw.line([(0, top_y), (w, top_y)], fill="red", width=3)
     draw.line([(0, eye_y), (w, eye_y)], fill="red", width=3)
     draw.line([(0, chin_y), (w, chin_y)], fill="red", width=3)
 
-    # Green dashed eye band
     for x in range(0, w, 20):
         draw.line([(x, eye_band_top), (x + 10, eye_band_top)], fill="green", width=2)
         draw.line([(x, eye_band_bottom), (x + 10, eye_band_bottom)], fill="green", width=2)
 
-    # Labels (ASCII-safe)
     draw.text((10, top_y - 25), "Top of Head", fill="red")
     draw.text((10, eye_y - 15), "Eye Line", fill="red")
     draw.text((10, chin_y - 20), "Chin", fill="red")
     draw.text((w - 240, eye_band_top - 20), "1 inch to 1-3/8 inch", fill="green")
     draw.text((w - 300, eye_band_bottom + 5), "1-1/8 inch to 1-3/8 inch from bottom", fill="green")
 
-    # 2x2 box outline & center line
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline="black", width=3)
     draw.line([(cx, 0), (cx, h)], fill="gray", width=1)
 
-    # Vertical inch rulers (left & right)
     inch_px = DPI
     for i in range(3):
         y = i * inch_px
@@ -196,7 +180,6 @@ def draw_guidelines(img, head_info):
         draw.line([(w - 20, y), (w, y)], fill="black", width=2)
         draw.text((w - 55, y - 10), f"{i} in", fill="black")
 
-    # PASS/FAIL box
     passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
     badge_color = "green" if passed else "red"
     status_text = "PASS" if passed else "FAIL"
@@ -210,16 +193,16 @@ def draw_guidelines(img, head_info):
 st.sidebar.header("Instructions")
 st.sidebar.markdown("""
 1. Upload a clear front-facing photo.
-2. Background is automatically removed and cleaned (no gray halo).
-3. Cropped & scaled to 2x2 inch (600x600 px).
-4. Draws official DV guideline lines and rulers.
+2. Background is auto-removed & cleaned (human model).
+3. Cropped & scaled to 2×2 inch (600×600 px).
+4. Official DV guidelines drawn (lines, rulers, PASS badge).
 
-**DV Requirements:**
-- Head height: 50–69% of image  
-- Eyes: 1-1/8–1-3/8 inch from bottom  
-- Plain white background  
-- Neutral expression, both eyes open  
-- No glasses, hats, or shadows
+DV Requirements:
+- Head height: 50–69% of image
+- Eyes: 1-1/8 to 1-3/8 inch from bottom
+- Plain white background
+- Neutral expression, both eyes open
+- No glasses/hats/shadows
 """)
 
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
@@ -236,25 +219,22 @@ if uploaded:
         st.subheader("Original")
         st.image(orig, use_column_width=True)
     with col2:
-        st.subheader("Processed (600x600)")
+        st.subheader("Processed (600×600)")
         st.image(overlay, use_column_width=True)
 
         buf = io.BytesIO()
         processed.save(buf, format="JPEG", quality=95)
         st.download_button(
-            label="Download Final 600x600 Photo",
+            label="Download Final 600×600 Photo",
             data=buf.getvalue(),
             file_name="dv_photo_final.jpg",
             mime="image/jpeg"
         )
 else:
     st.markdown("""
-    ## Welcome to the DV Lottery Photo Editor  
-    Upload your photo above to generate a perfect 600x600 DV-compliant image  
-    with official guideline lines, inch rulers, and clean hair edges.
-    """)
+## Welcome to the DV Lottery Photo Editor  
+Upload your photo to get a compliant 600×600 image with clean hair edge and official guideline lines.
+""")
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (Clean Hairline Edition)")
-
-
+st.caption("DV Lottery Photo Editor | Human-Segmentation Clean-Edge Edition")
