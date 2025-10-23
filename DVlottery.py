@@ -7,8 +7,8 @@ from rembg import remove
 warnings.filterwarnings('ignore')
 
 # ---------------------- CONFIG ----------------------
-st.set_page_config(page_title="DV Lottery Auto Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — AI Auto Adjust v2.6")
+st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
+st.title("DV Lottery Photo Editor — AI Auto Adjust v2.7")
 
 MIN_SIZE = 600
 mp_face_mesh = mp.solutions.face_mesh
@@ -17,7 +17,7 @@ EYE_STD = (0.56, 0.69)
 HEAD_BABY = (0.45, 0.72)
 EYE_BABY = (0.48, 0.65)
 
-# ---------------------- FACE UTILITIES ----------------------
+# ---------------------- FACE LANDMARKS ----------------------
 def get_face_landmarks(cv_img):
     with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.3) as fm:
         res = fm.process(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
@@ -48,6 +48,7 @@ def is_baby_photo(landmarks, h, w):
     except:
         return False
 
+# ---------------------- BACKGROUND REMOVE ----------------------
 def remove_bg(img):
     try:
         b = io.BytesIO(); img.save(b, format="PNG")
@@ -74,14 +75,21 @@ def auto_crop(img_pil, scale_boost=1.0, y_shift=0):
         resized = cv2.resize(cv_img, (MIN_SIZE, MIN_SIZE))
         return Image.fromarray(resized), {"top_y":150,"chin_y":400,"eye_y":270,"shoulder_y":480,"head_height":250,"is_baby":False}
 
-    scale = (MIN_SIZE * 0.85 * scale_boost) / (shoulder_y - top_y)
+    # --- precise scaling using head height ---
+    target_head_ratio = 0.60  # ideal DV target (~60% of frame)
+    scale = (MIN_SIZE * target_head_ratio * scale_boost) / (chin_y - top_y)
+
+    # resize image
     new_w, new_h = int(w * scale), int(h * scale)
     resized = cv2.resize(cv_img, (new_w, new_h))
     canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
 
-    y_center = (top_y + shoulder_y) // 2
-    y_offset = MIN_SIZE//2 - y_center + int(y_shift)
+    # --- vertical alignment using eye position ---
+    target_eye_y = int(MIN_SIZE * 0.58)  # eyes at 58% from bottom
+    y_offset = target_eye_y - eye_y + int(y_shift)
     x_offset = (MIN_SIZE - new_w)//2
+
+    # clamp inside canvas
     y_offset = max(min(y_offset, MIN_SIZE - new_h), 0)
     x_offset = max(min(x_offset, MIN_SIZE - new_w), 0)
     y_end = min(MIN_SIZE, y_offset + new_h)
@@ -113,28 +121,24 @@ def draw_guidelines(img, info):
     draw.text((20, 15), "PASS" if ok else "FAIL", fill=color)
     draw.text((20, 35), f"Head: {int(head_r*100)}%", fill="black")
     draw.text((20, 50), f"Eyes: {int(eye_r*100)}%", fill="black")
-    if info["is_baby"]: draw.text((20, 65), "BABY MODE", fill="orange")
+    if info["is_baby"]:
+        draw.text((20, 65), "BABY MODE", fill="orange")
     return img, head_r, eye_r, ok
 
-# ---------------------- AUTO ADJUST LOOP ----------------------
+# ---------------------- AUTO ADJUST ----------------------
 def auto_adjust(img, info, head_r, eye_r):
-    target_head, target_eye = 0.60, 0.60
-    best_img, best_info = img, info
-    for _ in range(3):  # iterative fine tuning
-        scale_adj = 1 + (target_head - head_r) * 0.5  # slower scaling
-        y_shift = (target_eye - eye_r) * MIN_SIZE * 0.4
-        adjusted, new_info = auto_crop(img, scale_boost=scale_adj, y_shift=y_shift)
-        _, head_r, eye_r, ok = draw_guidelines(adjusted.copy(), new_info)
-        best_img, best_info = adjusted, new_info
-        if ok: break
-    return best_img, best_info
+    target_head, target_eye = 0.60, 0.58
+    scale_adj = 1 + (target_head - head_r) * 0.5
+    y_shift = (target_eye - eye_r) * MIN_SIZE * 0.4
+    return auto_crop(img, scale_boost=scale_adj, y_shift=y_shift)
 
-# ---------------------- STREAMLIT ----------------------
-st.sidebar.header("DV Lottery Rules")
+# ---------------------- STREAMLIT UI ----------------------
+st.sidebar.header("DV Lottery Requirements")
 st.sidebar.markdown("""
 - 600×600px white background  
 - Head: 50–69% (baby 45–72%)  
 - Eyes: 56–69% (baby 48–65%)  
+- Shoulders to head only  
 """)
 
 uploaded = st.file_uploader("Upload Photo (JPG/PNG)", type=["jpg", "jpeg", "png"])
@@ -157,14 +161,17 @@ if uploaded:
             if st.button("🧠 Auto Adjust"):
                 fixed, fixed_info = auto_adjust(clean, info, head_r, eye_r)
                 fixed_guided, _, _, ok2 = draw_guidelines(fixed.copy(), fixed_info)
-                st.image(fixed_guided, use_column_width=True, caption="Auto Adjusted ✅" if ok2 else "Adjusted (retry if needed)")
+                st.image(fixed_guided, use_column_width=True,
+                         caption="Auto Adjusted ✅" if ok2 else "Adjusted (retry if needed)")
                 buf2 = io.BytesIO()
                 fixed.save(buf2, format="JPEG", quality=95)
-                st.download_button("📥 Download Adjusted Photo", buf2.getvalue(), "dv_auto_fixed.jpg", "image/jpeg")
+                st.download_button("📥 Download Adjusted Photo", buf2.getvalue(),
+                                   "dv_auto_fixed.jpg", "image/jpeg")
         else:
             buf = io.BytesIO()
             cropped.save(buf, format="JPEG", quality=95)
-            st.download_button("📥 Download DV Photo", buf.getvalue(), "dv_photo.jpg", "image/jpeg")
+            st.download_button("📥 Download DV Photo", buf.getvalue(),
+                               "dv_photo.jpg", "image/jpeg")
 
     st.info(f"""
 **Analysis:**  
@@ -174,4 +181,5 @@ if uploaded:
 """)
 else:
     st.write("📸 Upload a photo to auto-crop and auto-fix to DV standard.")
-st.caption("DV Lottery Photo Editor v2.6 — Self-Correcting Auto Adjust Mode")
+
+st.caption("DV Lottery Photo Editor v2.7 — Calibrated Auto-Adjust | Shoulders-to-Head Composition")
