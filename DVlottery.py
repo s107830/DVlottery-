@@ -23,7 +23,7 @@ mp_face_mesh = mp.solutions.face_mesh
 def get_face_landmarks(cv_img):
     with mp_face_mesh.FaceMesh(
         static_image_mode=True, max_num_faces=1, refine_landmarks=True,
-        min_detection_confidence=0.3, min_tracking_confidence=0.3  # Lowered confidence for babies
+        min_detection_confidence=0.3, min_tracking_confidence=0.3
     ) as fm:
         img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         results = fm.process(img_rgb)
@@ -31,15 +31,26 @@ def get_face_landmarks(cv_img):
             raise Exception("No face landmarks found")
         return results.multi_face_landmarks[0]
 
-def get_head_eye_positions(landmarks, img_h, img_w):
+def get_head_shoulder_positions(landmarks, img_h, img_w):
+    # Head top (forehead)
     top_y = int(landmarks.landmark[10].y * img_h)
+    
+    # Chin
     chin_y = int(landmarks.landmark[152].y * img_h)
+    
+    # Eyes
     left_eye_y = int(landmarks.landmark[33].y * img_h)
     right_eye_y = int(landmarks.landmark[263].y * img_h)
     eye_y = (left_eye_y + right_eye_y) // 2
+    
+    # Shoulders - using neck points and estimating shoulder position
+    neck_y = int(landmarks.landmark[10].y * img_h)  # Use forehead as reference
+    shoulder_estimate = chin_y + (chin_y - top_y) * 0.8  # Shoulder is ~80% of head height below chin
+    
     hair_buffer = int((chin_y - top_y) * 0.25)
     top_y = max(0, top_y - hair_buffer)
-    return top_y, chin_y, eye_y
+    
+    return top_y, chin_y, eye_y, int(shoulder_estimate)
 
 # ---------------------- BACKGROUND REMOVAL ----------------------
 def remove_background(img_pil):
@@ -75,7 +86,7 @@ def is_baby_photo(landmarks, img_h, img_w):
 
 # ---------------------- AUTO CROP ----------------------
 def auto_crop_dv(img_pil):
-    """Auto-crops photo to DV specs with baby detection and head-fit fix."""
+    """Auto-crops photo to DV specs with baby detection - shoulder to head only."""
     cv_img = np.array(img_pil)
     if len(cv_img.shape) == 2:
         cv_img = cv2.cvtColor(cv_img, cv2.COLOR_GRAY2RGB)
@@ -86,32 +97,38 @@ def auto_crop_dv(img_pil):
     
     try:
         landmarks = get_face_landmarks(cv_img)
-        top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
+        top_y, chin_y, eye_y, shoulder_y = get_head_shoulder_positions(landmarks, h, w)
         head_h = chin_y - top_y
         baby_mode = is_baby_photo(landmarks, h, w)
     except Exception as e:
-        # If face detection fails, center crop with safe margins
         st.warning(f"Face detection limited: {str(e)}. Using safe crop.")
+        # Center crop focusing on upper body
         scale = MIN_SIZE / max(h, w)
         new_w, new_h = int(w * scale), int(h * scale)
         resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
         canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
-        y_offset = (MIN_SIZE - new_h) // 2
+        # Position to show head and shoulders
+        y_offset = max(0, (MIN_SIZE - new_h) // 3)  # Higher position to focus on head
         x_offset = (MIN_SIZE - new_w) // 2
         canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
-        head_info = {"is_baby": False, "top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0}
+        head_info = {"is_baby": False, "top_y": y_offset+50, "chin_y": y_offset+150, 
+                    "eye_y": y_offset+100, "head_height": 100, "shoulder_y": y_offset+200}
         return Image.fromarray(canvas), head_info
 
-    # For babies, use more conservative scaling to ensure full head
+    # Calculate the area we want to capture (head to shoulders)
     if baby_mode:
-        target_head = MIN_SIZE * 0.55  # Smaller target for babies
+        # For babies: head to shoulders only (not full body)
+        body_height = shoulder_y - top_y
+        target_body_height = MIN_SIZE * 0.75  # Head + shoulders take 75% of frame
     else:
-        target_head = MIN_SIZE * 0.63
-        
-    scale = target_head / head_h
+        # For adults: standard head to shoulders
+        body_height = shoulder_y - top_y
+        target_body_height = MIN_SIZE * 0.70
 
-    # Limit maximum scale to prevent over-zooming
-    max_scale = MIN_SIZE / min(h, w) * 0.8
+    scale = target_body_height / body_height
+
+    # Limit scale to prevent over-zooming
+    max_scale = MIN_SIZE / min(h, w) * 0.9
     scale = min(scale, max_scale)
 
     new_w, new_h = int(w * scale), int(h * scale)
@@ -119,51 +136,54 @@ def auto_crop_dv(img_pil):
 
     canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
     
-    # More generous eye position range for babies
+    # Target eye position - adjusted for shoulder-to-head composition
     if baby_mode:
-        target_eye_min = MIN_SIZE - int(0.65 * MIN_SIZE)  # Higher position
-        target_eye_max = MIN_SIZE - int(0.55 * MIN_SIZE)
+        target_eye_min = MIN_SIZE - int(0.60 * MIN_SIZE)  # Higher position for babies
+        target_eye_max = MIN_SIZE - int(0.50 * MIN_SIZE)
     else:
         target_eye_min = MIN_SIZE - int(EYE_MAX_RATIO * MIN_SIZE)
         target_eye_max = MIN_SIZE - int(EYE_MIN_RATIO * MIN_SIZE)
         
     target_eye = (target_eye_min + target_eye_max) // 2
 
+    # Get positions in resized image
     landmarks_resized = get_face_landmarks(resized)
-    top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
+    top_y, chin_y, eye_y, shoulder_y = get_head_shoulder_positions(landmarks_resized, new_h, new_w)
+    
+    # Calculate offset to position eyes at target and ensure shoulders are visible but not too much body
     y_offset = target_eye - eye_y
-    x_offset = (MIN_SIZE - new_w) // 2
-
-    # ----- AUTO ZOOM-OUT IF HEAD MIGHT GET CUT -----
+    
+    # Ensure we don't crop the head top and show shoulders appropriately
     max_attempts = 3
     for attempt in range(max_attempts):
-        head_top_in_frame = top_y + y_offset >= 0
-        head_bottom_in_frame = chin_y + y_offset <= MIN_SIZE
+        head_top_in_frame = top_y + y_offset >= 10  # Small margin from top
+        shoulders_in_frame = shoulder_y + y_offset <= MIN_SIZE - 10  # Small margin from bottom
         
-        if head_top_in_frame and head_bottom_in_frame:
+        if head_top_in_frame and shoulders_in_frame:
             break
             
-        # Zoom out progressively
-        scale *= 0.85
-        new_w, new_h = int(w * scale), int(h * scale)
-        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        
-        try:
+        # Adjust positioning
+        if not head_top_in_frame:
+            y_offset = 10 - top_y  # Move down to show head top
+        if not shoulders_in_frame:
+            y_offset = MIN_SIZE - 10 - shoulder_y  # Move up to show shoulders
+            
+        # If still not fitting, zoom out
+        if attempt == 1 and (not head_top_in_frame or not shoulders_in_frame):
+            scale *= 0.85
+            new_w, new_h = int(w * scale), int(h * scale)
+            resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
             landmarks_resized = get_face_landmarks(resized)
-            top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
+            top_y, chin_y, eye_y, shoulder_y = get_head_shoulder_positions(landmarks_resized, new_h, new_w)
             y_offset = target_eye - eye_y
-            x_offset = (MIN_SIZE - new_w) // 2
-        except:
-            # If face detection fails after resize, use center positioning
-            y_offset = (MIN_SIZE - new_h) // 2
-            x_offset = (MIN_SIZE - new_w) // 2
-            break
 
-    # Ensure final positioning keeps head in frame
-    y_offset = max(0, min(y_offset, MIN_SIZE - new_h))
+    x_offset = (MIN_SIZE - new_w) // 2
+
+    # Final safety check on positioning
+    y_offset = max(10 - top_y, min(y_offset, MIN_SIZE - 10 - shoulder_y))
     x_offset = max(0, min(x_offset, MIN_SIZE - new_w))
 
-    # ----- paste to white canvas -----
+    # Paste to canvas
     y_start_dst = max(0, y_offset)
     y_end_dst = min(MIN_SIZE, y_offset + new_h)
     x_start_dst = max(0, x_offset)
@@ -180,11 +200,13 @@ def auto_crop_dv(img_pil):
     final_top_y = top_y + y_offset
     final_chin_y = chin_y + y_offset
     final_eye_y = eye_y + y_offset
+    final_shoulder_y = shoulder_y + y_offset
 
     head_info = {
         "top_y": final_top_y,
         "chin_y": final_chin_y,
         "eye_y": final_eye_y,
+        "shoulder_y": final_shoulder_y,
         "head_height": chin_y - top_y,
         "canvas_size": MIN_SIZE,
         "is_baby": baby_mode
@@ -196,7 +218,7 @@ def draw_guidelines(img, head_info):
     draw = ImageDraw.Draw(img)
     w, h = img.size
     cx = w // 2
-    top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
+    top_y, chin_y, eye_y, shoulder_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"], head_info.get("shoulder_y", h-50)
     head_h = head_info["head_height"]
     head_ratio = head_h / h
     eye_ratio = (h - eye_y) / h
@@ -209,24 +231,30 @@ def draw_guidelines(img, head_info):
     eye_band_top = h - eye_max_px
     eye_band_bottom = h - eye_min_px
 
+    # Draw key facial lines
     draw.line([(0, top_y), (w, top_y)], fill="red", width=3)
     draw.line([(0, eye_y), (w, eye_y)], fill="red", width=3)
     draw.line([(0, chin_y), (w, chin_y)], fill="red", width=3)
+    draw.line([(0, shoulder_y), (w, shoulder_y)], fill="blue", width=3)  # Shoulder line
 
+    # Draw eye position guidelines
     for x in range(0, w, 20):
         draw.line([(x, eye_band_top), (x + 10, eye_band_top)], fill="green", width=2)
         draw.line([(x, eye_band_bottom), (x + 10, eye_band_bottom)], fill="green", width=2)
 
+    # Labels
     draw.text((10, top_y - 25), "Top of Head", fill="red")
     draw.text((10, eye_y - 15), "Eye Line", fill="red")
     draw.text((10, chin_y - 20), "Chin", fill="red")
+    draw.text((10, shoulder_y - 20), "Shoulders", fill="blue")
     draw.text((w - 240, eye_band_top - 20), "1 inch to 1-3/8 inch", fill="green")
     draw.text((w - 300, eye_band_bottom + 5), "1-1/8 inch to 1-3/8 inch from bottom", fill="green")
 
+    # Frame and center line
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline="black", width=3)
     draw.line([(cx, 0), (cx, h)], fill="gray", width=1)
 
-    # inch rulers
+    # Inch rulers
     inch_px = DPI
     for i in range(3):
         y = i * inch_px
@@ -235,25 +263,30 @@ def draw_guidelines(img, head_info):
         draw.line([(w - 20, y), (w, y)], fill="black", width=2)
         draw.text((w - 55, y - 10), f"{i} in", fill="black")
 
-    # ----- PASS / FAIL LOGIC -----
+    # PASS/FAIL logic
     head_in_frame = (head_info["top_y"] > 5) and (head_info["chin_y"] < h - 5)
+    shoulders_in_frame = head_info.get("shoulder_y", h) < h - 5
+    
     passed = (
         HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO
         and EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO
         and head_in_frame
+        and shoulders_in_frame
     )
 
     badge_color = "green" if passed else "red"
     status_text = "PASS" if passed else "FAIL"
-    draw.rectangle([(10, 10), (200, 75)], fill="white", outline=badge_color, width=3)
-    draw.text((20, 20), status_text, fill=badge_color)
-    draw.text((20, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
+    draw.rectangle([(10, 10), (200, 90)], fill="white", outline=badge_color, width=3)
+    draw.text((20, 15), status_text, fill=badge_color)
+    draw.text((20, 35), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
 
     if not head_in_frame:
-        draw.text((20, 60), "Head cropped - FAIL", fill="red")
+        draw.text((20, 55), "Head cropped - FAIL", fill="red")
+    if not shoulders_in_frame:
+        draw.text((20, 70), "Shoulders cropped - FAIL", fill="red")
 
     if head_info.get("is_baby", False):
-        draw.text((20, 80), "Baby Mode Active", fill="orange")
+        draw.text((20, 85), "Baby Mode: Shoulders to Head", fill="orange")
 
     return img, head_ratio, eye_ratio
 
@@ -262,22 +295,23 @@ st.sidebar.header("Instructions")
 st.sidebar.markdown("""
 1. Upload a front-facing photo.
 2. Background auto-removed & cropped to 2x2 inch.
-3. Detects baby faces & adjusts scaling.
-4. Automatically zooms out if head might be cropped.
+3. Detects baby faces & shows shoulders-to-head only.
+4. Follows DV lottery requirements.
 
 **DV Requirements:**
-- Head height: 50–69%
+- Head height: 50–69% of image
 - Eyes: 1-1/8–1-3/8 inch from bottom
+- Shoulders to head composition
 - White background, neutral expression
 
-**Baby Photo Fix:** Now prevents head cropping with auto-zoom-out.
+**Baby Photos:** Now shows shoulders to head only (no full body).
 """)
 
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
 
 if uploaded:
     orig = Image.open(uploaded).convert("RGB")
-    with st.spinner("Processing photo..."):
+    with st.spinner("Processing photo... Shoulders to head composition for DV lottery."):
         bg_removed = remove_background(orig)
         processed, head_info = auto_crop_dv(bg_removed)
         overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
@@ -287,7 +321,7 @@ if uploaded:
         st.subheader("Original")
         st.image(orig, use_column_width=True)
     with col2:
-        st.subheader("Processed (600x600)")
+        st.subheader("Processed (600x600 - Shoulders to Head)")
         st.image(overlay, use_column_width=True)
 
         buf = io.BytesIO()
@@ -300,14 +334,20 @@ if uploaded:
         )
         
     if head_info.get("is_baby", False):
-        st.success("👶 Baby face detected - using special scaling to prevent head cropping")
+        st.success("👶 Baby face detected - showing shoulders to head only (DV requirement)")
 else:
     st.markdown("""
     ## Welcome to the DV Lottery Photo Editor  
     Upload your photo to generate a perfect 600x600 DV-compliant image.  
-    Baby faces are auto-detected and scaling adjusted to fit full head.  
-    **Fixed:** No more cropped baby heads - auto-zoom-out feature activated.
+    
+    **Features:**
+    - Baby faces auto-detected
+    - Shoulders to head composition only
+    - No full body photos for babies
+    - DV lottery requirement compliant
+    
+    **Output:** Professional shoulder-to-head portrait suitable for DV lottery application.
     """)
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Baby Detection + Auto Fit + No Cropped Heads")
+st.caption("DV Lottery Photo Editor | Shoulders to Head | Baby Detection | Official Guidelines")
