@@ -77,9 +77,9 @@ def get_ear_mask(landmarks, img_h, img_w):
         ]
         # Smaller and more precise elliptical regions
         for x, y in ear_points:
-            cv2.ellipse(mask, (x, y), (15, 25), 0, 0, 360, 255, -1)  # Further reduced ellipse size
-            mask = cv2.GaussianBlur(mask, (3, 3), 0)  # Smaller blur kernel
-            _, mask = cv2.threshold(mask, 180, 255, cv2.THRESH_BINARY)  # Higher threshold
+            cv2.ellipse(mask, (x, y), (15, 25), 0, 0, 360, 255, -1)
+            mask = cv2.GaussianBlur(mask, (3, 3), 0)
+            _, mask = cv2.threshold(mask, 180, 255, cv2.THRESH_BINARY)
         return mask
     except Exception as e:
         st.warning(f"Error creating ear mask: {str(e)}")
@@ -92,42 +92,23 @@ def remove_background(img_pil, brightness_factor=1.0):
             cv_img = np.array(img_pil)
             if brightness_factor != 1.0:
                 cv_img = cv2.convertScaleAbs(cv_img, alpha=brightness_factor, beta=0)
-            # Light blur to reduce noise
             cv_img = cv2.GaussianBlur(cv_img, (3, 3), 0)
-            # Sharpen
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
             cv_img = cv2.filter2D(cv_img, -1, kernel)
             img_pil = Image.fromarray(cv_img)
-
-            # Get ear mask before background removal
-            landmarks = get_face_landmarks(cv_img)
-            ear_mask = get_ear_mask(landmarks, cv_img.shape[0], cv_img.shape[1])
 
             # Remove background with rembg
             b = io.BytesIO()
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Post-process: Clean up alpha mask
+            # Ensure white background
+            white_bg = Image.new("RGB", fg.size, (255, 255, 255))
             fg_np = np.array(fg)
-            alpha = fg_np[:, :, 3]
-            # Softer threshold to preserve details
-            _, alpha = cv2.threshold(alpha, 200, 255, cv2.THRESH_BINARY)
-            # Smooth edges with Gaussian blur
-            alpha = cv2.GaussianBlur(alpha, (5, 5), 0)
-            # Morphological operations: Reduced dilation to avoid artifacts
-            kernel = np.ones((2, 2), np.uint8)
-            alpha = cv2.dilate(alpha, kernel, iterations=1)
-            alpha = cv2.erode(alpha, kernel, iterations=1)
-            # Blend ear mask more subtly
-            ear_mask_resized = cv2.resize(ear_mask, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_AREA)
-            alpha = cv2.bitwise_or(alpha, cv2.bitwise_not(ear_mask_resized))  # Use OR to blend
-            fg_np[:, :, 3] = alpha
-            fg = Image.fromarray(fg_np)
-
-            # Composite onto white background
-            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))  # Explicitly white background
-            result = Image.alpha_composite(white, fg).convert("RGB")
+            alpha = fg_np[:, :, 3] / 255.0
+            alpha = np.stack((alpha, alpha, alpha), axis=2)
+            result_np = (fg_np[:, :, :3].astype(float) * alpha + np.array([255, 255, 255]).astype(float) * (1 - alpha)).astype(np.uint8)
+            result = Image.fromarray(result_np)
             return result
         else:
             st.warning("No background removal available. Using original image.")
