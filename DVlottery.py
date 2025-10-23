@@ -13,14 +13,7 @@ except ImportError as e:
     st.error(f"Failed to import OpenCV: {str(e)}. Please ensure opencv-python-headless is installed.")
     sys.exit(1)
 
-# Check for backgroundremover and rembg imports
-try:
-    from background_remover.bg import remove
-    BACKGROUNDREMOVER_AVAILABLE = True
-except ImportError as e:
-    BACKGROUNDREMOVER_AVAILABLE = False
-    st.warning(f"Failed to import backgroundremover: {str(e)}. Falling back to rembg.")
-
+# Check for rembg import
 try:
     from rembg import remove as rembg_remove
     REMBG_AVAILABLE = True
@@ -74,17 +67,6 @@ def get_head_eye_positions(landmarks, img_h, img_w):
 
 def remove_background(img_pil):
     try:
-        # Try backgroundremover first
-        if BACKGROUNDREMOVER_AVAILABLE:
-            try:
-                b = io.BytesIO()
-                img_pil.save(b, format="PNG")
-                result = remove(b.getvalue(), bgcolor=(255, 255, 255, 255))
-                return Image.open(io.BytesIO(result)).convert("RGB")
-            except Exception as e:
-                st.warning(f"backgroundremover failed: {str(e)}. Falling back to rembg.")
-        
-        # Fallback to rembg
         if REMBG_AVAILABLE:
             b = io.BytesIO()
             img_pil.save(b, format="PNG")
