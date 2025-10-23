@@ -77,9 +77,9 @@ def get_ear_mask(landmarks, img_h, img_w):
         ]
         # Smaller and more precise elliptical regions
         for x, y in ear_points:
-            cv2.ellipse(mask, (x, y), (20, 30), 0, 0, 360, 255, -1)  # Reduced ellipse size
-            mask = cv2.GaussianBlur(mask, (5, 5), 0)  # Softer blur
-            _, mask = cv2.threshold(mask, 150, 255, cv2.THRESH_BINARY)  # Adjusted threshold
+            cv2.ellipse(mask, (x, y), (15, 25), 0, 0, 360, 255, -1)  # Further reduced ellipse size
+            mask = cv2.GaussianBlur(mask, (3, 3), 0)  # Smaller blur kernel
+            _, mask = cv2.threshold(mask, 180, 255, cv2.THRESH_BINARY)  # Higher threshold
         return mask
     except Exception as e:
         st.warning(f"Error creating ear mask: {str(e)}")
@@ -119,8 +119,9 @@ def remove_background(img_pil, brightness_factor=1.0):
             kernel = np.ones((2, 2), np.uint8)
             alpha = cv2.dilate(alpha, kernel, iterations=1)
             alpha = cv2.erode(alpha, kernel, iterations=1)
-            # Apply ear mask more precisely
-            alpha = cv2.bitwise_and(alpha, cv2.bitwise_not(ear_mask[:alpha.shape[0], :alpha.shape[1]]))
+            # Blend ear mask more subtly
+            ear_mask_resized = cv2.resize(ear_mask, (alpha.shape[1], alpha.shape[0]), interpolation=cv2.INTER_AREA)
+            alpha = cv2.bitwise_or(alpha, cv2.bitwise_not(ear_mask_resized))  # Use OR to blend
             fg_np[:, :, 3] = alpha
             fg = Image.fromarray(fg_np)
 
