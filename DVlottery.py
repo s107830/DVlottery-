@@ -1,11 +1,18 @@
 import streamlit as st
 from PIL import Image, ImageDraw
 import numpy as np
-import cv2
-import io
 import mediapipe as mp
 from dis_bg_remover import BgRemover
 import warnings
+import sys
+
+# Check for cv2 import
+try:
+    import cv2
+except ImportError as e:
+    st.error(f"Failed to import OpenCV: {str(e)}. Please ensure opencv-python-headless is installed.")
+    sys.exit(1)
+
 warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
