@@ -126,7 +126,7 @@ def remove_background(img_pil, brightness_factor=1.0):
             fg = Image.fromarray(fg_np)
 
             # Composite onto white background
-            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))  # Explicitly white background
             result = Image.alpha_composite(white, fg).convert("RGB")
             return result
         else:
