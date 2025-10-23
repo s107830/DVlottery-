@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Auto Correction & Official DV Guidelines")
+st.title("DV Lottery Photo Editor — Clean Hairline & Official DV Guidelines")
 
 # ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
@@ -41,14 +41,38 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     top_y = max(0, top_y - hair_buffer)
     return top_y, chin_y, eye_y
 
+# ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
 def remove_background(img_pil):
+    """Improved background removal with clean hair edges and no gray halo."""
     try:
+        # Run rembg and get RGBA result
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
-        return Image.alpha_composite(white, fg).convert("RGB")
-    except:
+
+        np_fg = np.array(fg)
+        alpha = np_fg[:, :, 3]
+        rgb = np_fg[:, :, :3]
+
+        # Strengthen and smooth the alpha mask
+        kernel = np.ones((3, 3), np.uint8)
+        alpha_clean = cv2.morphologyEx(alpha, cv2.MORPH_CLOSE, kernel, iterations=2)
+        alpha_clean = cv2.GaussianBlur(alpha_clean, (3, 3), 0)
+
+        # Composite onto white background
+        white_bg = np.full_like(rgb, 255)
+        alpha_norm = alpha_clean.astype(float) / 255.0
+        composite = (rgb * alpha_norm[:, :, None] + white_bg * (1 - alpha_norm[:, :, None])).astype(np.uint8)
+
+        # Optional: subtle edge darkening to remove "plastic" rim
+        edge = cv2.Laplacian(alpha_clean, cv2.CV_8U)
+        edge_mask = (edge > 10).astype(np.uint8) * 80
+        composite = cv2.subtract(composite, cv2.merge([edge_mask]*3))
+
+        return Image.fromarray(composite)
+
+    except Exception as e:
+        st.warning(f"Background cleanup failed ({e}). Using original image.")
         return img_pil
 
 # ---------------------- AUTO CROP ----------------------
@@ -64,7 +88,6 @@ def auto_crop_dv(img_pil):
     top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
     head_h = chin_y - top_y
 
-    # target head height ~63% of 600px = 378px
     target_head = MIN_SIZE * 0.63
     scale = target_head / head_h
     new_w, new_h = int(w * scale), int(h * scale)
@@ -154,7 +177,7 @@ def draw_guidelines(img, head_info):
         draw.line([(w - 20, y), (w, y)], fill="black", width=2)
         draw.text((w - 55, y - 10), f"{i} in", fill="black")
 
-    # PASS/FAIL box (plain ASCII)
+    # PASS/FAIL box
     passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
     badge_color = "green" if passed else "red"
     status_text = "PASS" if passed else "FAIL"
@@ -168,9 +191,9 @@ def draw_guidelines(img, head_info):
 st.sidebar.header("Instructions")
 st.sidebar.markdown("""
 1. Upload a clear front-facing photo.
-2. The tool removes the background & centers your face.
-3. Crops & scales to official 2x2 inch (600x600 px) size.
-4. Draws DV guidelines and compliance ruler.
+2. Background is automatically removed and cleaned (no gray halo).
+3. Cropped & scaled to 2x2 inch (600x600 px).
+4. Draws official DV guideline lines and rulers.
 
 **DV Requirements:**
 - Head height: 50–69% of image  
@@ -188,6 +211,7 @@ if uploaded:
         bg_removed = remove_background(orig)
         processed, head_info = auto_crop_dv(bg_removed)
         overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
+
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Original")
@@ -208,8 +232,8 @@ else:
     st.markdown("""
     ## Welcome to the DV Lottery Photo Editor  
     Upload your photo above to generate a perfect 600x600 DV-compliant image  
-    with official guideline lines, inch rulers, and pass/fail verification.
+    with official guideline lines, inch rulers, and clean hair edges.
     """)
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (ASCII-safe)")
+st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (Clean Hairline Edition)")
