@@ -70,16 +70,13 @@ def get_hair_mask(landmarks, img_h, img_w):
     """Create a mask to protect hair region based on top landmarks."""
     try:
         mask = np.zeros((img_h, img_w), dtype=np.uint8)
-        # Use top landmarks (e.g., 10, 109, 338) to approximate hairline
         hair_points = [
             (int(landmarks.landmark[10].x * img_w), int(landmarks.landmark[10].y * img_h)),  # Top
             (int(landmarks.landmark[109].x * img_w), int(landmarks.landmark[109].y * img_h)),  # Left top
             (int(landmarks.landmark[338].x * img_w), int(landmarks.landmark[338].y * img_h)),  # Right top
         ]
-        # Create a convex hull to form the hair mask
         points = np.array(hair_points, np.int32)
         cv2.fillPoly(mask, [points], 255)
-        # Extend mask upward and slightly outward for hair coverage
         mask = cv2.dilate(mask, np.ones((15, 15), np.uint8), iterations=1)
         mask = cv2.GaussianBlur(mask, (11, 11), 0)
         _, mask = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
@@ -89,19 +86,26 @@ def get_hair_mask(landmarks, img_h, img_w):
         return np.zeros((img_h, img_w), dtype=np.uint8)
 
 def get_ear_mask(landmarks, img_h, img_w):
-    """Create a mask to protect ear regions based on MediaPipe landmarks."""
+    """Create a precise mask to protect ear regions with additional landmarks."""
     try:
         mask = np.zeros((img_h, img_w), dtype=np.uint8)
-        # Ear landmarks (left ear: 234, right ear: 454)
-        ear_points = [
-            (int(landmarks.landmark[234].x * img_w), int(landmarks.landmark[234].y * img_h)),  # Left ear
-            (int(landmarks.landmark[454].x * img_w), int(landmarks.landmark[454].y * img_h)),  # Right ear
+        # Use multiple landmarks for better ear boundary (234, 454 as base, with 127, 356 for refinement)
+        left_ear_points = [
+            (int(landmarks.landmark[234].x * img_w), int(landmarks.landmark[234].y * img_h)),  # Base left
+            (int(landmarks.landmark[127].x * img_w), int(landmarks.landmark[127].y * img_h)),  # Refinement left
         ]
-        # Create larger, softer elliptical regions around ears
-        for x, y in ear_points:
-            cv2.ellipse(mask, (x, y), (40, 60), 0, 0, 360, 255, -1)
-            mask = cv2.GaussianBlur(mask, (9, 9), 0)
-            _, mask = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
+        right_ear_points = [
+            (int(landmarks.landmark[454].x * img_w), int(landmarks.landmark[454].y * img_h)),  # Base right
+            (int(landmarks.landmark[356].x * img_w), int(landmarks.landmark[356].y * img_h)),  # Refinement right
+        ]
+        # Create tight ellipses
+        for x, y in left_ear_points:
+            cv2.ellipse(mask, (x, y), (25, 40), 0, 0, 360, 255, -1)  # Smaller, tighter ellipse
+        for x, y in right_ear_points:
+            cv2.ellipse(mask, (x, y), (25, 40), 0, 0, 360, 255, -1)
+        # Minimal blur for smooth edges without blur effect
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        _, mask = cv2.threshold(mask, 200, 255, cv2.THRESH_BINARY)  # Tighter threshold
         return mask
     except Exception as e:
         st.warning(f"Error creating ear mask: {str(e)}")
@@ -110,7 +114,6 @@ def get_ear_mask(landmarks, img_h, img_w):
 def remove_background(img_pil, brightness_factor=1.0):
     try:
         if REMBG_AVAILABLE:
-            # Convert to numpy array for processing
             cv_img = np.array(img_pil)
             h, w = cv_img.shape[:2]
 
@@ -118,7 +121,7 @@ def remove_background(img_pil, brightness_factor=1.0):
             landmarks = get_face_landmarks(cv_img)
             top_y, chin_y, _ = get_head_eye_positions(landmarks, h, w)
 
-            # Optional brightness adjustment (disabled by default to preserve color)
+            # Optional brightness adjustment
             if brightness_factor != 1.0:
                 cv_img = cv2.convertScaleAbs(cv_img, alpha=brightness_factor, beta=0)
             img_pil = Image.fromarray(cv_img)
@@ -128,38 +131,36 @@ def remove_background(img_pil, brightness_factor=1.0):
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Post-process: Clean up alpha mask with hair and noise removal
+            # Post-process: Clean alpha mask for smooth cut
             fg_np = np.array(fg)
             alpha = fg_np[:, :, 3]
-            # Softer threshold to preserve hair
-            _, alpha = cv2.threshold(alpha, 220, 255, cv2.THRESH_BINARY)
-            alpha = cv2.GaussianBlur(alpha, (7, 7), 0)  # Softer blur
+            # Higher threshold for cleaner edges
+            _, alpha = cv2.threshold(alpha, 230, 255, cv2.THRESH_BINARY)
+            # Minimal smoothing to avoid blur
+            alpha = cv2.GaussianBlur(alpha, (3, 3), sigmaX=0.3)
+            # Remove small artifacts without affecting edges
             kernel = np.ones((2, 2), np.uint8)
-            alpha = cv2.dilate(alpha, kernel, iterations=1)
             alpha = cv2.erode(alpha, kernel, iterations=1)
+            alpha = cv2.dilate(alpha, kernel, iterations=1)
 
-            # Apply hair mask to protect hairline
+            # Apply hair mask
             hair_mask = get_hair_mask(landmarks, h, w)
             alpha = cv2.bitwise_or(alpha, hair_mask[:alpha.shape[0], :alpha.shape[1]])
-            # Apply ear mask
+            # Apply refined ear mask
             ear_mask = get_ear_mask(landmarks, h, w)
             alpha = cv2.bitwise_or(alpha, ear_mask[:alpha.shape[0], :alpha.shape[1]])
 
-            # Remove noise (black dots) with median filtering
-            alpha = cv2.medianBlur(alpha, 5)
-            # Additional cleanup with small opening operation
-            kernel = np.ones((3, 3), np.uint8)
-            alpha = cv2.morphologyEx(alpha, cv2.MORPH_OPEN, kernel)
-
+            # Ensure smooth transition without outlines
+            alpha = cv2.GaussianBlur(alpha, (5, 5), sigmaX=0.5)
             fg_np[:, :, 3] = alpha
             fg = Image.fromarray(fg_np)
 
-            # Composite onto white background with strict blending
+            # Composite onto white background
             white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
             result = Image.alpha_composite(white, fg).convert("RGB")
-            # Ensure no black pixels remain by setting any dark pixels to white
+            # Replace any residual dark outlines with white
             result_np = np.array(result)
-            result_np[np.all(result_np < [10, 10, 10], axis=-1)] = [255, 255, 255]
+            result_np[np.all(result_np < [20, 20, 20], axis=-1)] = [255, 255, 255]
             return Image.fromarray(result_np)
         else:
             st.warning("No background removal available. Using original image.")
@@ -293,7 +294,7 @@ def draw_guidelines(img, head_info):
 st.sidebar.header("Instructions")
 st.sidebar.markdown("""
 1. Upload a clear front-facing photo.
-2. The tool removes the background & centers your face.
+2. The tool removes the background & centers your image.
 3. Crops & scales to official 2x2 inch (600x600 px) size.
 4. Draws DV guidelines and compliance ruler.
 
@@ -309,43 +310,4 @@ st.sidebar.markdown("""
 st.sidebar.header("Adjustments")
 brightness_factor = st.sidebar.slider("Brightness Adjustment", 0.8, 1.2, 1.0, 0.05)
 
-uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
-
-if uploaded:
-    try:
-        orig = Image.open(uploaded).convert("RGB")
-        if orig.size[0] < MIN_SIZE or orig.size[1] < MIN_SIZE:
-            st.warning("Image is too small. Please upload a photo at least 600x600 pixels.")
-        else:
-            with st.spinner("Processing photo..."):
-                bg_removed = remove_background(orig, brightness_factor=brightness_factor)
-                processed, head_info = auto_crop_dv(bg_removed)
-                overlay, head_ratio, eye_ratio = draw_guidelines(processed.copy(), head_info)
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Original")
-                st.image(orig, use_column_width=True)
-            with col2:
-                st.subheader("Processed (600x600)")
-                st.image(overlay, use_column_width=True)
-
-                # Save with DPI metadata for DV compliance
-                buf = io.BytesIO()
-                processed.save(buf, format="JPEG", quality=95, dpi=(DPI, DPI))
-                st.download_button(
-                    label="Download Final 600x600 Photo",
-                    data=buf.getvalue(),
-                    file_name="dv_photo_final.jpg",
-                    mime="image/jpeg"
-                )
-    except Exception as e:
-        st.error(f"Error processing image: {str(e)}")
-else:
-    st.markdown("""
-    ## Welcome to the DV Lottery Photo Editor  
-    Upload your photo above to generate a perfect 600x600 DV-compliant image  
-    with official guideline lines, inch rulers, and pass/fail verification.
-    """)
-
-st.markdown("---")
-st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (ASCII-safe)")
+uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "
