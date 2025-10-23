@@ -128,11 +128,11 @@ def remove_background(img_pil, brightness_factor=1.0):
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Post-process: Clean up alpha mask with hair protection
+            # Post-process: Clean up alpha mask with hair and noise removal
             fg_np = np.array(fg)
             alpha = fg_np[:, :, 3]
             # Softer threshold to preserve hair
-            _, alpha = cv2.threshold(alpha, 220, 255, cv2.THRESH_BINARY)  # Higher threshold
+            _, alpha = cv2.threshold(alpha, 220, 255, cv2.THRESH_BINARY)
             alpha = cv2.GaussianBlur(alpha, (7, 7), 0)  # Softer blur
             kernel = np.ones((2, 2), np.uint8)
             alpha = cv2.dilate(alpha, kernel, iterations=1)
@@ -145,13 +145,22 @@ def remove_background(img_pil, brightness_factor=1.0):
             ear_mask = get_ear_mask(landmarks, h, w)
             alpha = cv2.bitwise_or(alpha, ear_mask[:alpha.shape[0], :alpha.shape[1]])
 
+            # Remove noise (black dots) with median filtering
+            alpha = cv2.medianBlur(alpha, 5)
+            # Additional cleanup with small opening operation
+            kernel = np.ones((3, 3), np.uint8)
+            alpha = cv2.morphologyEx(alpha, cv2.MORPH_OPEN, kernel)
+
             fg_np[:, :, 3] = alpha
             fg = Image.fromarray(fg_np)
 
-            # Composite onto white background
+            # Composite onto white background with strict blending
             white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
             result = Image.alpha_composite(white, fg).convert("RGB")
-            return result
+            # Ensure no black pixels remain by setting any dark pixels to white
+            result_np = np.array(result)
+            result_np[np.all(result_np < [10, 10, 10], axis=-1)] = [255, 255, 255]
+            return Image.fromarray(result_np)
         else:
             st.warning("No background removal available. Using original image.")
             return img_pil.convert("RGB")
