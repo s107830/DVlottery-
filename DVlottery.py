@@ -42,38 +42,43 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     return top_y, chin_y, eye_y
 
 # ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
-def remove_background(img_pil):
-    """Improved background removal with clean hair edges and no gray halo."""
+def remove_background(img_pil, edge_trim=2, alpha_thresh=180):
+    """
+    Background removal with sharp mask and zero blur halo.
+    edge_trim : pixels to contract mask border
+    alpha_thresh : cutoff for transparency (0-255)
+    """
     try:
-        # Run rembg and get RGBA result
+        # Run rembg
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-
         np_fg = np.array(fg)
-        alpha = np_fg[:, :, 3]
         rgb = np_fg[:, :, :3]
+        alpha = np_fg[:, :, 3]
 
-        # Strengthen and smooth the alpha mask
+        # --- 1. Make binary mask (hard edge) ---
+        mask = np.where(alpha > alpha_thresh, 255, 0).astype(np.uint8)
+
+        # --- 2. Trim thin translucent border ---
+        if edge_trim > 0:
+            kernel = np.ones((edge_trim, edge_trim), np.uint8)
+            mask = cv2.erode(mask, kernel, iterations=1)
+
+        # --- 3. Clean noise and fill holes ---
         kernel = np.ones((3, 3), np.uint8)
-        alpha_clean = cv2.morphologyEx(alpha, cv2.MORPH_CLOSE, kernel, iterations=2)
-        alpha_clean = cv2.GaussianBlur(alpha_clean, (3, 3), 0)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-        # Composite onto white background
-        white_bg = np.full_like(rgb, 255)
-        alpha_norm = alpha_clean.astype(float) / 255.0
-        composite = (rgb * alpha_norm[:, :, None] + white_bg * (1 - alpha_norm[:, :, None])).astype(np.uint8)
-
-        # Optional: subtle edge darkening to remove "plastic" rim
-        edge = cv2.Laplacian(alpha_clean, cv2.CV_8U)
-        edge_mask = (edge > 10).astype(np.uint8) * 80
-        composite = cv2.subtract(composite, cv2.merge([edge_mask]*3))
+        # --- 4. Composite on white background (no blending) ---
+        white = np.full_like(rgb, 255, np.uint8)
+        composite = np.where(mask[:, :, None] == 255, rgb, white)
 
         return Image.fromarray(composite)
 
     except Exception as e:
         st.warning(f"Background cleanup failed ({e}). Using original image.")
         return img_pil
+
 
 # ---------------------- AUTO CROP ----------------------
 def auto_crop_dv(img_pil):
@@ -237,3 +242,4 @@ else:
 
 st.markdown("---")
 st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (Clean Hairline Edition)")
+
