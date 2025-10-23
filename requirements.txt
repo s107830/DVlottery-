@@ -5,7 +5,8 @@ numpy==1.26.0
 opencv-python==4.8.1.78
 mediapipe==0.10.21
 transparent-background==1.2.12
-torch==2.1.0  # Required for transparent-background
+dis-bg-remover==0.1.2
+torch==2.1.0
 onnxruntime==1.17.0
 markdown-it-py==4.0.0
 mdurl==0.1.2
