@@ -10,13 +10,13 @@ warnings.filterwarnings('ignore')
 
 # ---------------------- PAGE SETUP ----------------------
 st.set_page_config(page_title="DV Lottery Photo Editor", layout="wide")
-st.title("DV Lottery Photo Editor — Improved Hair Edge & Human Segmentation")
+st.title("DV Lottery Photo Editor — Baby-Aware Auto Correction & Official DV Guidelines")
 
 # ---------------------- CONSTANTS ----------------------
 MIN_SIZE = 600
 HEAD_MIN_RATIO, HEAD_MAX_RATIO = 0.50, 0.69
 EYE_MIN_RATIO, EYE_MAX_RATIO = 0.56, 0.69
-DPI = 300  # 2×2 inch at 300 DPI
+DPI = 300
 mp_face_mesh = mp.solutions.face_mesh
 
 # ---------------------- FACE UTILITIES ----------------------
@@ -41,43 +41,43 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     top_y = max(0, top_y - hair_buffer)
     return top_y, chin_y, eye_y
 
-# ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
-def remove_background(img_pil, edge_trim=3, alpha_thresh=200):
-    """
-    Remove background using human-segmentation model + cleanup:
-    - Use hard mask (binary) to eliminate translucent halo.
-    - Optionally trim a few pixels (edge_trim) to tighten hairline.
-    """
+# ---------------------- BACKGROUND REMOVAL ----------------------
+def remove_background(img_pil):
     try:
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
-
-        np_fg = np.array(fg)
-        rgb = np_fg[:, :, :3]
-        alpha = np_fg[:, :, 3]
-
-        # 1) Binary mask
-        mask = np.where(alpha > alpha_thresh, 255, 0).astype(np.uint8)
-
-        # 2) Trim the edge (erode)
-        if edge_trim > 0:
-            kernel = np.ones((edge_trim, edge_trim), np.uint8)
-            mask = cv2.erode(mask, kernel, iterations=1)
-
-        # 3) Clean mask
-        kernel2 = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel2, iterations=2)
-
-        # 4) Composite on white
-        white = np.full_like(rgb, 255, np.uint8)
-        composite = np.where(mask[:, :, None] == 255, rgb, white)
-
-        return Image.fromarray(composite.astype(np.uint8))
-
-    except Exception as e:
-        st.warning(f"Background cleanup failed ({e}). Using original image.")
+        white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+        return Image.alpha_composite(white, fg).convert("RGB")
+    except:
         return img_pil
+
+# ---------------------- BABY DETECTION ----------------------
+def is_baby_photo(landmarks, img_h, img_w):
+    """
+    Heuristic baby detector: checks face proportions.
+    Babies tend to have larger heads vs face width, smaller chin area, and higher eyes.
+    """
+    try:
+        top_y = landmarks.landmark[10].y * img_h
+        chin_y = landmarks.landmark[152].y * img_h
+        left_eye_y = landmarks.landmark[33].y * img_h
+        right_eye_y = landmarks.landmark[263].y * img_h
+        eye_y = (left_eye_y + right_eye_y) / 2
+        nose_y = landmarks.landmark[1].y * img_h
+
+        face_height = chin_y - top_y
+        eye_to_chin = chin_y - eye_y
+        eye_to_top = eye_y - top_y
+        ratio = eye_to_top / face_height
+
+        # Babies typically have eyes closer to vertical center or higher (ratio > 0.42)
+        # and shorter nose-to-chin proportion (less developed jaw)
+        jaw_ratio = (chin_y - nose_y) / face_height
+
+        return ratio > 0.42 and jaw_ratio < 0.33
+    except:
+        return False
 
 # ---------------------- AUTO CROP ----------------------
 def auto_crop_dv(img_pil):
@@ -92,10 +92,17 @@ def auto_crop_dv(img_pil):
     top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
     head_h = chin_y - top_y
 
-    target_head = MIN_SIZE * 0.63
+    # detect baby
+    baby_mode = is_baby_photo(landmarks, h, w)
+
+    if baby_mode:
+        st.info("👶 Baby detected: applying gentle scaling for larger head proportion.")
+        target_head = MIN_SIZE * 0.58  # babies have bigger head ratio
+    else:
+        target_head = MIN_SIZE * 0.63
+
     scale = target_head / head_h
-    new_w = int(w * scale)
-    new_h = int(h * scale)
+    new_w, new_h = int(w * scale), int(h * scale)
     resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
     canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
@@ -104,8 +111,8 @@ def auto_crop_dv(img_pil):
     target_eye = (target_eye_min + target_eye_max) // 2
 
     landmarks_resized = get_face_landmarks(resized)
-    top_y_r, chin_y_r, eye_y_r = get_head_eye_positions(landmarks_resized, resized.shape[0], resized.shape[1])
-    y_offset = target_eye - eye_y_r
+    top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
+    y_offset = target_eye - eye_y
     x_offset = (MIN_SIZE - new_w) // 2
 
     y_start_dst = max(0, y_offset)
@@ -121,29 +128,27 @@ def auto_crop_dv(img_pil):
     canvas[y_start_dst:y_end_dst, x_start_dst:x_end_dst] = \
         resized[y_start_src:y_end_src, x_start_src:x_end_src]
 
-    final_top_y = top_y_r + y_offset
-    final_chin_y = chin_y_r + y_offset
-    final_eye_y = eye_y_r + y_offset
+    final_top_y = top_y + y_offset
+    final_chin_y = chin_y + y_offset
+    final_eye_y = eye_y + y_offset
 
     head_info = {
         "top_y": final_top_y,
         "chin_y": final_chin_y,
         "eye_y": final_eye_y,
-        "head_height": chin_y_r - top_y_r,
-        "canvas_size": MIN_SIZE
+        "head_height": chin_y - top_y,
+        "canvas_size": MIN_SIZE,
+        "is_baby": baby_mode
     }
     return Image.fromarray(canvas), head_info
 
-# ---------------------- DRAW GUIDELINES ----------------------
+# ---------------------- DRAW DV GUIDELINES ----------------------
 def draw_guidelines(img, head_info):
     draw = ImageDraw.Draw(img)
     w, h = img.size
     cx = w // 2
-    top_y = head_info["top_y"]
-    chin_y = head_info["chin_y"]
-    eye_y = head_info["eye_y"]
+    top_y, chin_y, eye_y = head_info["top_y"], head_info["chin_y"], head_info["eye_y"]
     head_h = head_info["head_height"]
-
     head_ratio = head_h / h
     eye_ratio = (h - eye_y) / h
 
@@ -183,9 +188,12 @@ def draw_guidelines(img, head_info):
     passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
     badge_color = "green" if passed else "red"
     status_text = "PASS" if passed else "FAIL"
-    draw.rectangle([(10, 10), (170, 60)], fill="white", outline=badge_color, width=3)
-    draw.text((25, 20), status_text, fill=badge_color)
-    draw.text((25, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
+    draw.rectangle([(10, 10), (190, 65)], fill="white", outline=badge_color, width=3)
+    draw.text((20, 20), status_text, fill=badge_color)
+    draw.text((20, 40), f"H:{int(head_ratio*100)}%  E:{int(eye_ratio*100)}%", fill="black")
+
+    if head_info.get("is_baby", False):
+        draw.text((20, 70), "Baby Mode Active", fill="orange")
 
     return img, head_ratio, eye_ratio
 
@@ -193,16 +201,14 @@ def draw_guidelines(img, head_info):
 st.sidebar.header("Instructions")
 st.sidebar.markdown("""
 1. Upload a clear front-facing photo.
-2. Background is auto-removed & cleaned (human model).
-3. Cropped & scaled to 2×2 inch (600×600 px).
-4. Official DV guidelines drawn (lines, rulers, PASS badge).
+2. Background auto-removed and centered.
+3. Automatically detects baby faces and adjusts proportions.
+4. Draws DV guidelines & compliance rulers.
 
-DV Requirements:
-- Head height: 50–69% of image
-- Eyes: 1-1/8 to 1-3/8 inch from bottom
-- Plain white background
-- Neutral expression, both eyes open
-- No glasses/hats/shadows
+**DV Requirements:**
+- Head height: 50–69%  
+- Eyes: 1-1/8–1-3/8 inch from bottom  
+- White background, neutral face, no glasses/hats.
 """)
 
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
@@ -219,22 +225,23 @@ if uploaded:
         st.subheader("Original")
         st.image(orig, use_column_width=True)
     with col2:
-        st.subheader("Processed (600×600)")
+        st.subheader("Processed (600x600)")
         st.image(overlay, use_column_width=True)
 
         buf = io.BytesIO()
         processed.save(buf, format="JPEG", quality=95)
         st.download_button(
-            label="Download Final 600×600 Photo",
+            label="Download Final 600x600 Photo",
             data=buf.getvalue(),
             file_name="dv_photo_final.jpg",
             mime="image/jpeg"
         )
 else:
     st.markdown("""
-## Welcome to the DV Lottery Photo Editor  
-Upload your photo to get a compliant 600×600 image with clean hair edge and official guideline lines.
-""")
+    ## Welcome to the DV Lottery Photo Editor  
+    Upload your photo to generate a perfect DV-compliant 600x600 image.  
+    Baby faces are auto-detected and adjusted for proper proportions.
+    """)
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Human-Segmentation Clean-Edge Edition")
+st.caption("DV Lottery Photo Editor | Baby Detection & Official 2x2 inch Guidelines")
