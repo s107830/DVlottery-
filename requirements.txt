@@ -1,12 +1,10 @@
-streamlit==1.28.0
+streamlit==1.39.0
 rich>=10.14.0,<14
 pillow==10.0.1
 numpy==1.26.0
 opencv-python==4.8.1.78
 mediapipe==0.10.21
-transparent-background==1.2.12
 dis-bg-remover==0.1.2
-torch==2.1.0
 onnxruntime==1.17.0
 markdown-it-py==4.0.0
 mdurl==0.1.2
