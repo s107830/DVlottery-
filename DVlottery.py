@@ -66,6 +66,47 @@ def get_head_eye_positions(landmarks, img_h, img_w):
         st.error(f"Error calculating head/eye positions: {str(e)}")
         raise
 
+def get_hair_mask(landmarks, img_h, img_w):
+    """Create a mask to protect hair region based on top landmarks."""
+    try:
+        mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        # Use top landmarks (e.g., 10, 109, 338) to approximate hairline
+        hair_points = [
+            (int(landmarks.landmark[10].x * img_w), int(landmarks.landmark[10].y * img_h)),  # Top
+            (int(landmarks.landmark[109].x * img_w), int(landmarks.landmark[109].y * img_h)),  # Left top
+            (int(landmarks.landmark[338].x * img_w), int(landmarks.landmark[338].y * img_h)),  # Right top
+        ]
+        # Create a convex hull to form the hair mask
+        points = np.array(hair_points, np.int32)
+        cv2.fillPoly(mask, [points], 255)
+        # Extend mask upward and slightly outward for hair coverage
+        mask = cv2.dilate(mask, np.ones((15, 15), np.uint8), iterations=1)
+        mask = cv2.GaussianBlur(mask, (11, 11), 0)
+        _, mask = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
+        return mask
+    except Exception as e:
+        st.warning(f"Error creating hair mask: {str(e)}")
+        return np.zeros((img_h, img_w), dtype=np.uint8)
+
+def get_ear_mask(landmarks, img_h, img_w):
+    """Create a mask to protect ear regions based on MediaPipe landmarks."""
+    try:
+        mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        # Ear landmarks (left ear: 234, right ear: 454)
+        ear_points = [
+            (int(landmarks.landmark[234].x * img_w), int(landmarks.landmark[234].y * img_h)),  # Left ear
+            (int(landmarks.landmark[454].x * img_w), int(landmarks.landmark[454].y * img_h)),  # Right ear
+        ]
+        # Create larger, softer elliptical regions around ears
+        for x, y in ear_points:
+            cv2.ellipse(mask, (x, y), (40, 60), 0, 0, 360, 255, -1)
+            mask = cv2.GaussianBlur(mask, (9, 9), 0)
+            _, mask = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
+        return mask
+    except Exception as e:
+        st.warning(f"Error creating ear mask: {str(e)}")
+        return np.zeros((img_h, img_w), dtype=np.uint8)
+
 def remove_background(img_pil, brightness_factor=1.0):
     try:
         if REMBG_AVAILABLE:
@@ -73,19 +114,13 @@ def remove_background(img_pil, brightness_factor=1.0):
             cv_img = np.array(img_pil)
             h, w = cv_img.shape[:2]
 
-            # Get face landmarks to determine hairline region
+            # Get face landmarks
             landmarks = get_face_landmarks(cv_img)
-            top_y, _, _ = get_head_eye_positions(landmarks, h, w)
-            hair_region_height = int(h * 0.3)  # Adjust top 30% of image for hair brightness
+            top_y, chin_y, _ = get_head_eye_positions(landmarks, h, w)
 
-            # Apply localized brightness boost to hair region
+            # Optional brightness adjustment (disabled by default to preserve color)
             if brightness_factor != 1.0:
-                cv_img_top = cv_img[:hair_region_height, :, :].astype(float)
-                cv_img_top = cv_img_top * brightness_factor
-                cv_img_top = np.clip(cv_img_top, 0, 255).astype(np.uint8)
-                cv_img[:hair_region_height, :, :] = cv_img_top
-
-            # Convert back to PIL for rembg
+                cv_img = cv2.convertScaleAbs(cv_img, alpha=brightness_factor, beta=0)
             img_pil = Image.fromarray(cv_img)
 
             # Remove background with rembg
@@ -93,14 +128,29 @@ def remove_background(img_pil, brightness_factor=1.0):
             img_pil.save(b, format="PNG")
             fg = Image.open(io.BytesIO(rembg_remove(b.getvalue()))).convert("RGBA")
 
-            # Preserve hair edges with minimal processing
+            # Post-process: Clean up alpha mask with hair protection
             fg_np = np.array(fg)
-            alpha = fg_np[:, :, 3] / 255.0
-            alpha = cv2.GaussianBlur(alpha, (3, 3), sigmaX=0.5)
-            alpha = np.stack((alpha, alpha, alpha), axis=2)
-            white_bg = np.full(fg_np.shape[:2] + (3,), 255, dtype=np.uint8)
-            result_np = (fg_np[:, :, :3].astype(float) * alpha + white_bg.astype(float) * (1 - alpha)).astype(np.uint8)
-            result = Image.fromarray(result_np)
+            alpha = fg_np[:, :, 3]
+            # Softer threshold to preserve hair
+            _, alpha = cv2.threshold(alpha, 220, 255, cv2.THRESH_BINARY)  # Higher threshold
+            alpha = cv2.GaussianBlur(alpha, (7, 7), 0)  # Softer blur
+            kernel = np.ones((2, 2), np.uint8)
+            alpha = cv2.dilate(alpha, kernel, iterations=1)
+            alpha = cv2.erode(alpha, kernel, iterations=1)
+
+            # Apply hair mask to protect hairline
+            hair_mask = get_hair_mask(landmarks, h, w)
+            alpha = cv2.bitwise_or(alpha, hair_mask[:alpha.shape[0], :alpha.shape[1]])
+            # Apply ear mask
+            ear_mask = get_ear_mask(landmarks, h, w)
+            alpha = cv2.bitwise_or(alpha, ear_mask[:alpha.shape[0], :alpha.shape[1]])
+
+            fg_np[:, :, 3] = alpha
+            fg = Image.fromarray(fg_np)
+
+            # Composite onto white background
+            white = Image.new("RGBA", fg.size, (255, 255, 255, 255))
+            result = Image.alpha_composite(white, fg).convert("RGB")
             return result
         else:
             st.warning("No background removal available. Using original image.")
@@ -248,7 +298,7 @@ st.sidebar.markdown("""
 
 # Add brightness adjustment slider
 st.sidebar.header("Adjustments")
-brightness_factor = st.sidebar.slider("Brightness Adjustment", 0.8, 1.5, 1.2, 0.05)  # Increased default to 1.2 for hair
+brightness_factor = st.sidebar.slider("Brightness Adjustment", 0.8, 1.2, 1.0, 0.05)
 
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
 
