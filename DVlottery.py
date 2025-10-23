@@ -42,42 +42,56 @@ def get_head_eye_positions(landmarks, img_h, img_w):
     return top_y, chin_y, eye_y
 
 # ---------------------- IMPROVED BACKGROUND REMOVAL ----------------------
+
+
 def remove_background(img_pil, edge_trim=2, alpha_thresh=180):
     """
-    Background removal with sharp mask and zero blur halo.
-    edge_trim : pixels to contract mask border
-    alpha_thresh : cutoff for transparency (0-255)
+    Two-stage cleanup:
+    1) hard mask to remove translucent fringe
+    2) color-neutralize edge to kill gray/blue halo
     """
     try:
-        # Run rembg
+        # --- Run rembg and extract channels ---
         b = io.BytesIO()
         img_pil.save(b, format="PNG")
         fg = Image.open(io.BytesIO(remove(b.getvalue()))).convert("RGBA")
         np_fg = np.array(fg)
-        rgb = np_fg[:, :, :3]
+        rgb = np_fg[:, :, :3].astype(np.float32)
         alpha = np_fg[:, :, 3]
 
-        # --- 1. Make binary mask (hard edge) ---
+        # --- Stage 1: hard-edge mask ---
         mask = np.where(alpha > alpha_thresh, 255, 0).astype(np.uint8)
-
-        # --- 2. Trim thin translucent border ---
         if edge_trim > 0:
             kernel = np.ones((edge_trim, edge_trim), np.uint8)
             mask = cv2.erode(mask, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=2)
 
-        # --- 3. Clean noise and fill holes ---
-        kernel = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        # --- Stage 2: despill / neutralize near edges ---
+        # Find transition region (~4px rim) where halo usually appears
+        edge = cv2.Laplacian(mask, cv2.CV_8U)
+        edge_mask = cv2.dilate(edge, np.ones((3, 3), np.uint8), iterations=1)
+        edge_mask = cv2.GaussianBlur(edge_mask, (5, 5), 0)
+        edge_mask_f = edge_mask.astype(np.float32) / 255.0
 
-        # --- 4. Composite on white background (no blending) ---
-        white = np.full_like(rgb, 255, np.uint8)
-        composite = np.where(mask[:, :, None] == 255, rgb, white)
+        # Convert to HSV, reduce saturation near edge (remove color tint)
+        hsv = cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_RGB2HSV).astype(np.float32)
+        h, s, v = cv2.split(hsv)
+        s = s * (1 - 0.8 * edge_mask_f)  # drop saturation up to 80% at rim
+        hsv = cv2.merge([h, s, v])
+        rgb_neutral = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
 
-        return Image.fromarray(composite)
+        # --- Final composite on white ---
+        white = np.full_like(rgb_neutral, 255, np.uint8)
+        composite = np.where(mask[:, :, None] == 255, rgb_neutral, white)
+
+        return Image.fromarray(composite.astype(np.uint8))
 
     except Exception as e:
         st.warning(f"Background cleanup failed ({e}). Using original image.")
         return img_pil
+
+
+
 
 
 # ---------------------- AUTO CROP ----------------------
@@ -242,4 +256,5 @@ else:
 
 st.markdown("---")
 st.caption("DV Lottery Photo Editor | Official 2x2 inch Compliance Visualizer (Clean Hairline Edition)")
+
 
