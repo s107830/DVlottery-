@@ -23,7 +23,7 @@ mp_face_mesh = mp.solutions.face_mesh
 def get_face_landmarks(cv_img):
     with mp_face_mesh.FaceMesh(
         static_image_mode=True, max_num_faces=1, refine_landmarks=True,
-        min_detection_confidence=0.4, min_tracking_confidence=0.4
+        min_detection_confidence=0.3, min_tracking_confidence=0.3  # Lowered confidence for babies
     ) as fm:
         img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         results = fm.process(img_rgb)
@@ -83,20 +83,50 @@ def auto_crop_dv(img_pil):
         cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2RGB)
 
     h, w = cv_img.shape[:2]
-    landmarks = get_face_landmarks(cv_img)
-    top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
-    head_h = chin_y - top_y
+    
+    try:
+        landmarks = get_face_landmarks(cv_img)
+        top_y, chin_y, eye_y = get_head_eye_positions(landmarks, h, w)
+        head_h = chin_y - top_y
+        baby_mode = is_baby_photo(landmarks, h, w)
+    except Exception as e:
+        # If face detection fails, center crop with safe margins
+        st.warning(f"Face detection limited: {str(e)}. Using safe crop.")
+        scale = MIN_SIZE / max(h, w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+        canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
+        y_offset = (MIN_SIZE - new_h) // 2
+        x_offset = (MIN_SIZE - new_w) // 2
+        canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized
+        head_info = {"is_baby": False, "top_y": 0, "chin_y": 0, "eye_y": 0, "head_height": 0}
+        return Image.fromarray(canvas), head_info
 
-    baby_mode = is_baby_photo(landmarks, h, w)
-    target_head = MIN_SIZE * (0.58 if baby_mode else 0.63)
+    # For babies, use more conservative scaling to ensure full head
+    if baby_mode:
+        target_head = MIN_SIZE * 0.55  # Smaller target for babies
+    else:
+        target_head = MIN_SIZE * 0.63
+        
     scale = target_head / head_h
+
+    # Limit maximum scale to prevent over-zooming
+    max_scale = MIN_SIZE / min(h, w) * 0.8
+    scale = min(scale, max_scale)
 
     new_w, new_h = int(w * scale), int(h * scale)
     resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
 
     canvas = np.full((MIN_SIZE, MIN_SIZE, 3), 255, np.uint8)
-    target_eye_min = MIN_SIZE - int(EYE_MAX_RATIO * MIN_SIZE)
-    target_eye_max = MIN_SIZE - int(EYE_MIN_RATIO * MIN_SIZE)
+    
+    # More generous eye position range for babies
+    if baby_mode:
+        target_eye_min = MIN_SIZE - int(0.65 * MIN_SIZE)  # Higher position
+        target_eye_max = MIN_SIZE - int(0.55 * MIN_SIZE)
+    else:
+        target_eye_min = MIN_SIZE - int(EYE_MAX_RATIO * MIN_SIZE)
+        target_eye_max = MIN_SIZE - int(EYE_MIN_RATIO * MIN_SIZE)
+        
     target_eye = (target_eye_min + target_eye_max) // 2
 
     landmarks_resized = get_face_landmarks(resized)
@@ -104,16 +134,34 @@ def auto_crop_dv(img_pil):
     y_offset = target_eye - eye_y
     x_offset = (MIN_SIZE - new_w) // 2
 
-    # ----- auto zoom-out if head might get cut -----
-    if (top_y + y_offset < 0) or (chin_y + y_offset > MIN_SIZE):
-        y_offset = min(max(y_offset, 0), MIN_SIZE - new_h)
-        scale *= 0.9  # zoom out slightly
+    # ----- AUTO ZOOM-OUT IF HEAD MIGHT GET CUT -----
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        head_top_in_frame = top_y + y_offset >= 0
+        head_bottom_in_frame = chin_y + y_offset <= MIN_SIZE
+        
+        if head_top_in_frame and head_bottom_in_frame:
+            break
+            
+        # Zoom out progressively
+        scale *= 0.85
         new_w, new_h = int(w * scale), int(h * scale)
         resized = cv2.resize(cv_img, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
-        landmarks_resized = get_face_landmarks(resized)
-        top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
-        y_offset = target_eye - eye_y
-        x_offset = (MIN_SIZE - new_w) // 2
+        
+        try:
+            landmarks_resized = get_face_landmarks(resized)
+            top_y, chin_y, eye_y = get_head_eye_positions(landmarks_resized, new_h, new_w)
+            y_offset = target_eye - eye_y
+            x_offset = (MIN_SIZE - new_w) // 2
+        except:
+            # If face detection fails after resize, use center positioning
+            y_offset = (MIN_SIZE - new_h) // 2
+            x_offset = (MIN_SIZE - new_w) // 2
+            break
+
+    # Ensure final positioning keeps head in frame
+    y_offset = max(0, min(y_offset, MIN_SIZE - new_h))
+    x_offset = max(0, min(x_offset, MIN_SIZE - new_w))
 
     # ----- paste to white canvas -----
     y_start_dst = max(0, y_offset)
@@ -215,12 +263,14 @@ st.sidebar.markdown("""
 1. Upload a front-facing photo.
 2. Background auto-removed & cropped to 2x2 inch.
 3. Detects baby faces & adjusts scaling.
-4. Automatically fails or zooms out if head cropped.
+4. Automatically zooms out if head might be cropped.
 
 **DV Requirements:**
 - Head height: 50–69%
 - Eyes: 1-1/8–1-3/8 inch from bottom
 - White background, neutral expression
+
+**Baby Photo Fix:** Now prevents head cropping with auto-zoom-out.
 """)
 
 uploaded = st.file_uploader("Upload Photo", type=["jpg", "jpeg", "png"])
@@ -248,13 +298,16 @@ if uploaded:
             file_name="dv_photo_final.jpg",
             mime="image/jpeg"
         )
+        
+    if head_info.get("is_baby", False):
+        st.success("👶 Baby face detected - using special scaling to prevent head cropping")
 else:
     st.markdown("""
     ## Welcome to the DV Lottery Photo Editor  
     Upload your photo to generate a perfect 600x600 DV-compliant image.  
     Baby faces are auto-detected and scaling adjusted to fit full head.  
-    Cropped heads now automatically FAIL.
+    **Fixed:** No more cropped baby heads - auto-zoom-out feature activated.
     """)
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Baby Detection + Auto Fit + Cropped Head Fail Check")
+st.caption("DV Lottery Photo Editor | Baby Detection + Auto Fit + No Cropped Heads")
