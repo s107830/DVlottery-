@@ -119,23 +119,29 @@ def draw_guidelines(img, head_info):
         draw.line([(x, eye_band_top), (x + 10, eye_band_top)], fill="green", width=2)
         draw.line([(x, eye_band_bottom), (x + 10, eye_band_bottom)], fill="green", width=2)
 
-    # Text labels (matching official diagram)
+    # Safe ASCII labels (no Unicode fractions)
     draw.text((10, top_y - 25), "Top of Head", fill="red")
     draw.text((10, eye_y - 15), "Eye Line", fill="red")
     draw.text((10, chin_y - 20), "Chin", fill="red")
-    draw.text((w - 240, eye_band_top - 20), "1 inch to 1⅜ inch", fill="green")
-    draw.text((w - 300, eye_band_bottom + 5), "1⅛ inch to 1⅜ inch from bottom", fill="green")
+    draw.text((w - 240, eye_band_top - 20), "1 inch to 1-3/8 inch", fill="green")
+    draw.text((w - 300, eye_band_bottom + 5), "1-1/8 inch to 1-3/8 inch from bottom", fill="green")
 
     # 2x2 box outline & center line
     draw.rectangle([(0, 0), (w - 1, h - 1)], outline="black", width=3)
     draw.line([(cx, 0), (cx, h)], fill="gray", width=1)
 
-    # Vertical ruler ticks
+    # Vertical ruler ticks (left side)
     inch_px = DPI
     for i in range(3):
         y = i * inch_px
         draw.line([(0, y), (20, y)], fill="black", width=2)
         draw.text((25, y - 10), f"{i} in", fill="black")
+
+    # Right-side ruler
+    for i in range(3):
+        y = i * inch_px
+        draw.line([(w - 20, y), (w, y)], fill="black", width=2)
+        draw.text((w - 55, y - 10), f"{i} in", fill="black")
 
     # Pass/Fail badge
     passed = (HEAD_MIN_RATIO <= head_ratio <= HEAD_MAX_RATIO) and (EYE_MIN_RATIO <= eye_ratio <= EYE_MAX_RATIO)
@@ -150,15 +156,15 @@ def draw_guidelines(img, head_info):
 st.sidebar.header("📋 Instructions")
 st.sidebar.markdown("""
 1. Upload a clear front-facing photo.
-2. The tool auto-removes background & centers your face.
+2. The tool removes the background & centers your face.
 3. It crops & scales to official 2×2 inch DV specs (600×600 px).
-4. You’ll see DV guideline lines and a PASS/FAIL badge.
+4. Shows DV guideline lines, inch ruler, and PASS/FAIL badge.
 
 **DV Requirements:**
-- Head height: 50–69% of image
-- Eyes: 1⅛–1⅜ inch from bottom
-- Plain white background
-- Neutral expression, both eyes open
+- Head height: 50–69% of photo  
+- Eyes: 1-1/8″–1-3/8″ from bottom  
+- Plain white background  
+- Neutral expression, both eyes open  
 - No glasses or shadows
 """)
 
@@ -179,13 +185,14 @@ if uploaded:
         st.image(overlay, use_container_width=True)
         buf = io.BytesIO()
         processed.save(buf, format="JPEG", quality=95)
-        st.download_button("⬇️ Download Final 600×600 Photo", buf.getvalue(), "dv_photo_final.jpg", "image/jpeg")
+        st.download_button("⬇️ Download Final 600×600 Photo", buf.getvalue(),
+                           "dv_photo_final.jpg", "image/jpeg")
 else:
     st.markdown("""
     ## 🏁 Welcome to DV Lottery Photo Editor  
-    Upload your image above to start — the app will auto-crop, check proportions,
-    and draw **official DV guideline lines** exactly like the sample diagram.
+    Upload your image above — the app auto-crops, checks proportions,
+    and draws **official DV guideline lines with inch rulers** exactly like the U.S. spec.
     """)
 
 st.markdown("---")
-st.caption("DV Lottery Photo Editor | Official 2×2 inch Compliance Visualizer")
+st.caption("DV Lottery Photo Editor | Official 2×2 inch Compliance Visualizer (Unicode-safe)")
